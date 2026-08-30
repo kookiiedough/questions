@@ -6,3 +6,44 @@ for rapid protoptyping and feedback loops need to setup notebook interface -done
 picked idea - guided by usefulness ot autored kill two birds with one stone , taken a bit of time shuflfing between claude lamrena and deepseek
 
 settled on
+
+Problem "Jailbreak success prediction is expensive.
+Can we use internal signals to predict which
+attacks will work?"
+
+Hypothesis "Refusal-direction magnitude predicts
+success for some attack families but not
+others. Where it fails, the attack either
+sneaks past detection or overpowers the
+refusal."
+
+Method "Trained a linear probe for refusal direction
+on Qwen 3.6. Tested 4 attack families.
+Measured prefill and generation refusal
+magnitudes."
+
+Key Result "Refusal direction predicts success for
+role-play and injection attacks (AUC=0.85)
+but fails for adversarial suffixes
+(AUC=0.52). For suffixes, the refusal
+direction never activates—the attack is
+stealthy."
+
+Baseline "Random guessing AUC=0.50.
+
+Clean-prompt refusal rate predicted 60% of
+variance. Our predictor beat both."
+Causal Test "Steering the refusal direction changed
+success rate by 40%, confirming causality."
+Limitations "Tested only one model (Qwen 3.6). Need
+to test generalization to other models."
+
+
+ran claude end to end implementation
+ran into issue
+
+ need  to go over other tracer bullets an implemnt using save to jupyter lab uplad an test to google colab
+ annoying with claude version beacsue fetiching data fror only harmful +director issues , etc
+
+
+“In Qwen3-4B, we found a low-dimensional activation direction at a late layer that strongly distinguishes our harmful and harmless prompt examples, and this separation generalizes across cross-validation folds.”

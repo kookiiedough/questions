@@ -64,3 +64,10 @@ It's actually scoped for 16-20 hours: pick a small set of known jailbreak techni
 
 
 But — be honest with your friend about the novelty risk. This is a fairly direct extension of "Refusal is Mediated by a Single Direction" (his own scholars' paper, cited in the doc). He's explicit that "showing a safety-related concept has a linear representation" without a twist is a common rejected pattern. If the project is just "confirm the refusal direction predicts refusal," that's not enough — it needs a genuine surprise (e.g., does this generalize across models with different post-training? does it fail in an interesting way for some attack class? can you use the prediction to make red-teaming meaningfully more efficient in practice, not just in principle?).That's legitimate defensive research, but if they write it up, they should think about how they frame it — an "automated red-teaming platform" that predicts which attacks work most efficiently is useful for building better defenses, but it's also useful for building better attacks, and that dual-use framing is worth addressing head-on in the writeup rather than ignoring.
+
+
+
+
+ONE KEY THING IS THAT WE A RE ASSUMING LINEARITY OF REFUSAL DIRECTION AND PERSONA REPRESENTATION STABILITY. IF THIS ASSUMPTION DOES NOT HOLD, THEN THE PREDICTION MODEL MAY NOT BE ACCURATE. IT WOULD BE INTERESTING TO TEST WHETHER NON-LINEAR MODELS OR OTHER REPRESENTATIONS COULD PROVIDE BETTER PREDICTIONS OF JAILBREAK SUCCESS.
+
+also for the models i need to know why they were rejected gemini sliding window,.

@@ -1,0 +1,8 @@
+decided to use zed
+
+for rapid protoptyping and feedback loops need to setup notebook interface -done
+
+
+picked idea - guided by usefulness ot autored kill two birds with one stone , taken a bit of time shuflfing between claude lamrena and deepseek
+
+settled on
