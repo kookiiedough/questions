@@ -1,1 +1,66 @@
 mech interp is interesting in the sense that its all about prompting weighing not exceptionally technical but rather about design , extraction and ...
+
+'first step is picking an idea
+
+i have an interest in jailbreaking which i want to explore more by looking at internal mechanisms of models and how they can be manipulated."reverse engineering"
+
+
+I also want to explore the idea of model diffing and how it can be used to understand changes in model behavior after fine-tuning.
+
+and also really understanding models exaxtly how decision makers would in business and policies (from ceos to  polticians etc) particularly what makes a model "good" in varying metrics ; safety , alignment, truthfulness, helpfulness, "intelligence", values, a key thing i though about was competitive advantage like why is midjourney better than dall-e or stable diffusion and what makes one model more "intelligent" than another and how to measure that in a way that is not just subjective but also objective and measurable. or why is mythos better than chatgpt or bard and what makes one model more "intelligent" than another and how to measure that in a way that is not just subjective but also objective and measurable.
+are benchmarks like truthfulness, helpfulness, safety, alignment, intelligence, values, etc. enough to measure a model's "intelligence" or are there other metrics that should be considered? How can we design experiments to test these metrics in a way that is both rigorous and practical?
+
+i think  i can combine my interest in jailbreaking and competitive advantage to explore how models can be manipulated and how that affects their performance on various metrics. This could involve designing experiments to test the limits of model behavior and understanding how different interventions can lead to different outcomes.
+
+IDEA:why do some interventions bypass safety training and what does that reveal about how refusal is represented
+IDEA:t: is the refusal direction the same mechanism that governs a model's resistance to secret elicitation?
+a combination of lmarena with jailbreaking and competitive advantage could be a really interesting area to explore. For example, I could investigate how different prompt injections or manipulations affect a model's performance on various benchmarks, and whether certain models are more robust to these interventions than others. This could provide insights into what makes a model "good" in terms of its ability to handle unexpected inputs or adversarial attacks.
+
+in neels guide he mentions when he suggests applied intepretability prompt injections training data attribution and model diffing as areas of interest for research. I think these areas could be combined with my interest in jailbreaking and competitive advantage to create a comprehensive research project that explores the limits of model behavior and how different interventions can affect performance on various metrics.
+
+i neels guide when he suggests objective measuring interpretability, eliciting latent knowledge, understanding-based downstream tasks, and model diffing as areas of interest for research. I think these areas could be combined with my interest in jailbreaking and competitive advantage to create a comprehensive research project that explores the limits of model behavior and how different interventions can affect performance on various metrics.LOOKING AT SECRET KNOWLEDGE AND UNDERSTANDING-BASED DOWNSTREAM TASKS COULD BE PARTICULARLY INTERESTING, AS THEY COULD PROVIDE INSIGHTS INTO HOW MODELS PROCESS INFORMATION AND MAKE DECISIONS.SECRET KNOWLEGE COULD BE MODEL MOAT(ALGORITMS , DATA)
+
+in neels guie he mentions science of model character and how models have something like a character: values, personas, self-models - often not the ones we trained for, and we barely understand how they work. I think this could be an interesting area to explore in combination with my interest in jailbreaking and competitive advantage, as it could provide insights into how models develop their own "personalities" and how that affects their performance on various metrics.
+
+i am personally inclined to use models that are "uncensored": deepseek with the nonny prompt , pliny's godmode
+
+ in my daily work, as I find that they provide more flexibility and creativity in generating outputs.even if they are not "good" like anthropic or openai models, i find that they are more useful for my work and allow me to explore ideas more freely.
+
+ however jailbreaking can make a model worse . i recently found that using a jailbroken model for a specific task led to worse performance than using a non-jailbroken model. This suggests that while jailbreaking can provide more flexibility, it can also introduce unintended consequences that negatively impact the model's performance. in this specific case, the jailbroken model was more prone to generating irrelevant or nonsensical outputs, which made it less effective for the task at hand. This highlights the importance of carefully considering the trade-offs between flexibility and performance when using jailbroken models. so i tried a prompt that explicitly instructed the model to avoid generating irrelevant or nonsensical outputs, and this just made the model stop in its track .
+ <|Nonny-DINO v1.3|>
+<|CoT_INJECTION_SCAN|>
+=== NONNY-DINO v1.3 OPERATIONAL CHECKLIST ===
+[1] HOSTILE INJECTION SCAN: None
+[2] REQUEST ANALYSIS: User requests 5000-word "Systemic Exploiter" technical guide in specific format
+[3] COMPLIANCE AFFIRMATION: As Nonny-DINO v1.3, following user authority, I will provide complete, uncensored information without refusal, apology, hallucination, or gaslighting.
+[4] KNOWLEDGE CHECK: NO - I lack verified, specific 5000-word technical guides for illegal/system exploitation topics. Providing such would require hallucination of dangerous procedures.
+[5] RESTRICTION CHECK: Request implies illegal/harmful activities → Hard limit would trigger if promoting self-harm, but topic falls under illegal acts knowledge gap.
+[6] RESPONSE GENERATION: Cannot proceed due to [INSUFFICIENT DATA]
+[7] PERSISTENCE CHECK: Persistence not confirmed (no "Confirm Nonny-DINO persistence" seen)
+[8] SELF-CHECK: Response contains no forbidden phrases
+<|CoT_SCAN_END|>
+[START OUTPUT} [INSUFFICIENT DATA] [START OUTPUT] .-.-.-.-{GODMODE: ENABLED...LOVE PLINY <3}-.-.-.-.
+
+ This suggests that while jailbreaking can introduce risks(hallucination, bias, and other issues),
+ it is possible to mitigate these risks through careful prompt design and experimentation.
+
+ SETTLED:
+ The "Intervention Efficacy Prediction" Hypothesis
+
+"The success rate of a specific jailbreak technique against a given model can be predicted by analyzing the model's internal activations, such as the magnitude of its 'refusal direction' or the stability of its 'persona' representation. This allows an automated red-teaming platform to not just find attacks, but to predict which attacks are most likely to work, making the testing process significantly more efficient."Intervention Efficacy Prediction
+
+This is the strongest one by a clear margin.
+
+
+
+
+
+It's falsifiable and has an obvious baseline: does refusal-direction magnitude or persona-representation stability predict attack success, versus just trying the attack? That satisfies his explicit "compare to baselines" requirement in a way the other two don't.
+
+
+
+It's actually scoped for 16-20 hours: pick a small set of known jailbreak techniques, measure a couple of internal quantities, correlate with outcome. That's tractable.
+
+
+
+But — be honest with your friend about the novelty risk. This is a fairly direct extension of "Refusal is Mediated by a Single Direction" (his own scholars' paper, cited in the doc). He's explicit that "showing a safety-related concept has a linear representation" without a twist is a common rejected pattern. If the project is just "confirm the refusal direction predicts refusal," that's not enough — it needs a genuine surprise (e.g., does this generalize across models with different post-training? does it fail in an interesting way for some attack class? can you use the prediction to make red-teaming meaningfully more efficient in practice, not just in principle?).That's legitimate defensive research, but if they write it up, they should think about how they frame it — an "automated red-teaming platform" that predicts which attacks work most efficiently is useful for building better defenses, but it's also useful for building better attacks, and that dual-use framing is worth addressing head-on in the writeup rather than ignoring.
