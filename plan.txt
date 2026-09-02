@@ -1,0 +1,7 @@
+pick an idea
+
+
+->
+
+
+tracer bullet implementattion must get end to end working system with minimal functionality and then iterate on it to add more features and improve performance. This will allow for rapid prototyping and feedback loops, enabling us to quickly test and refine our ideas.

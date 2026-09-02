@@ -1,0 +1,18 @@
+Writing Advice
+It’s extremely important to have a good write-up! The advice in my post on writing ML papers
+may be helpful - obviously, I don’t expect a formal paper, but the principles of clear
+communication apply.
+● Focus on a Narrative. Don't just dump all your experiments. Structure your write-up
+around the one or two most interesting, concrete insights you found. What is the key
+story?
+● Quality over Quantity. One interesting finding, well-explained and well-supported, is
+far better than ten superficial experiments.
+● Show Your Work. Explain why you ran an experiment, not just what you did. What
+hypothesis were you testing? What were the possible outcomes? This reveals your
+thought process.
+● Your Reader Has Zero Context. The "illusion of transparency" is a huge trap.
+Things that feel obvious to you will be completely new to your reader. Explain
+everything from the ground up. Define your terms. Label your graphs clearly.
+● Make Your Executive Summary Count. It needs to stand on its own and convey the
+most important takeaways and a sketch of your key evidence. Don't make me hunt
+for the point or crucial details. Good graphs are a huge plus here.
