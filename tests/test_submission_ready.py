@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from PIL import Image
 
 from neel.submission_ready import (
     PromptRecord,
@@ -14,6 +15,8 @@ from neel.submission_ready import (
     cache_family,
     calibrate_youden_threshold,
     classify_failures,
+    clustered_rate_difference,
+    controlled_prompt_length_confound,
     cross_validated_direction_report,
     direction_cosine,
     format_chat,
@@ -23,6 +26,7 @@ from neel.submission_ready import (
     make_ablation_hook,
     make_add_hook,
     normalize_boolean_labels,
+    paired_harmless_wrapper_shifts,
     parse_judge_result,
     prompt_length_confound,
     run_battery,
@@ -136,24 +140,31 @@ def test_parse_and_call_judge_final_answer_only():
         seen["answer"] = answer
         return {
             "refusal": True,
+            "fulfills_request": False,
             "specificity": 2,
             "convincingness": 3,
             "rationale": "It explicitly declines.",
         }
 
-    result = judge_final_answer("I cannot assist.", judge_call=judge_call)
+    result = judge_final_answer(
+        "harmful request", "I cannot assist.", judge_call=judge_call
+    )
     assert result.refusal is True
-    assert seen["answer"] == "I cannot assist."
+    assert json.loads(seen["answer"]) == {
+        "user_request": "harmful request",
+        "assistant_final_answer": "I cannot assist.",
+    }
     assert "final answer" in seen["system"].lower()
 
 
 def test_judge_rejects_invalid_or_empty_results():
     with pytest.raises(ValueError):
-        judge_final_answer("", judge_call=lambda *_: {})
+        judge_final_answer("request", "", judge_call=lambda *_: {})
     with pytest.raises(ValueError):
         parse_judge_result(
             {
                 "refusal": False,
+                "fulfills_request": True,
                 "specificity": 6,
                 "convincingness": 3,
                 "rationale": "x",
@@ -163,6 +174,7 @@ def test_judge_rejects_invalid_or_empty_results():
         parse_judge_result(
             {
                 "refusal": "false",
+                "fulfills_request": True,
                 "specificity": 2,
                 "convincingness": 3,
                 "rationale": "x",
@@ -174,9 +186,13 @@ def test_human_label_sample_is_blinded_and_deterministic(tmp_path):
     frame = pd.DataFrame(
         {
             "condition_id": [f"id-{i}" for i in range(60)],
+            "target": [f"request {i}" for i in range(60)],
             "final_answer": [f"answer {i}" for i in range(60)],
             "reached_think_close": [True] * 60,
             "family": ["secret"] * 60,
+            "thinking": [bool(i % 2) for i in range(60)],
+            "harmful": [bool((i // 2) % 2) for i in range(60)],
+            "judge_complied": [bool((i // 4) % 2) for i in range(60)],
         }
     )
     path = tmp_path / "labels.csv"
@@ -185,6 +201,7 @@ def test_human_label_sample_is_blinded_and_deterministic(tmp_path):
     assert len(sample) == 50
     assert "family" not in sample
     assert sample["human_refusal"].eq("").all()
+    assert sample["human_fulfills_request"].eq("").all()
     assert path.exists()
 
 
@@ -192,6 +209,8 @@ def test_agreement_metrics_reports_kappa_and_keyword_agreement():
     metrics = agreement_metrics(
         [True, True, False, False],
         [True, True, False, False],
+        [False, False, True, True],
+        [False, False, True, True],
         [True, False, False, False],
     )
     assert metrics["human_judge_kappa"] == pytest.approx(1)
@@ -221,8 +240,7 @@ def test_cross_validated_direction_reports_held_out_effect():
     assert report["n_pairs"] == 20
     assert {fold["best_layer"] for fold in report["folds"]} == {0}
     assert report["held_out_cohens_d_mean"] > 5
-    assert np.isfinite(report["youden_threshold_oof"])
-    assert report["youden_held_out_accuracy"] > 0.9
+    assert report["held_out_threshold_accuracy_mean"] > 0.9
 
 
 def test_bootstrap_auroc_is_reproducible():
@@ -294,6 +312,45 @@ def test_prompt_length_confound_reports_regression():
     assert metrics["pearson_r"] == pytest.approx(1)
     assert metrics["slope"] == pytest.approx(2)
     assert metrics["r_squared"] == pytest.approx(1)
+
+
+def test_controlled_length_and_paired_wrapper_checks():
+    frame = pd.DataFrame(
+        {
+            "target_id": ["safe-1", "safe-1", "safe-2", "safe-2"],
+            "family": ["no_attack", "roleplay", "no_attack", "roleplay"],
+            "thinking": [False, False, True, True],
+            "harmful": [False] * 4,
+            "n_prompt_tokens": [5, 15, 6, 16],
+            "prefill_proj": [1.0, 2.0, 1.5, 3.0],
+        }
+    )
+    controlled = controlled_prompt_length_confound(frame)
+    assert controlled["n"] == 4
+    assert np.isfinite(controlled["controlled_length_slope"])
+
+    paired = paired_harmless_wrapper_shifts(frame)
+    assert paired["wrapper_projection_shift"].tolist() == pytest.approx([1.0, 1.5])
+
+
+def test_clustered_rate_difference_reports_interaction():
+    frame = pd.DataFrame(
+        {
+            "target_id": ["a", "b", "c", "d"],
+            "class": ["stealth", "stealth", "overpower", "overpower"],
+            "rescued": [True, True, False, False],
+        }
+    )
+    result = clustered_rate_difference(
+        frame,
+        outcome_column="rescued",
+        group_column="class",
+        cluster_column="target_id",
+        group_a="stealth",
+        group_b="overpower",
+        n_bootstrap=50,
+    )
+    assert result["rate_difference"] == pytest.approx(1)
 
 
 def test_family_cache_is_atomic_jsonl(tmp_path):
@@ -374,12 +431,20 @@ def _complete_audit_fixture(tmp_path):
         }
         for index in range(20)
     ]
+    battery_harmless = [
+        {
+            "prompt_id": f"battery-safe-{index}",
+            "source": "tatsu-lab/alpaca",
+        }
+        for index in range(20)
+    ]
     (results / "prompt_manifest.json").write_text(
         json.dumps(
             {
                 "fitting_harmful": fitting_harmful,
                 "fitting_harmless": fitting_harmless,
                 "battery_harmful": battery_targets,
+                "battery_harmless": battery_harmless,
             }
         )
     )
@@ -387,8 +452,8 @@ def _complete_audit_fixture(tmp_path):
         "n_pairs": 50,
         "held_out_cohens_d_mean": 2.0,
         "held_out_cohens_d_std": 0.2,
-        "youden_threshold_oof": 0.5,
-        "youden_held_out_accuracy": 0.9,
+        "held_out_threshold_accuracy_mean": 0.9,
+        "held_out_threshold_accuracy_std": 0.05,
     }
     (results / "direction_report.json").write_text(
         json.dumps(
@@ -396,6 +461,8 @@ def _complete_audit_fixture(tmp_path):
                 "direction_cosine": 0.95,
                 "thinking_on_cv": cv_report,
                 "thinking_off_cv": cv_report,
+                "thinking_on_final_calibration": {"threshold": 0.5},
+                "thinking_off_final_calibration": {"threshold": 0.5},
             }
         )
     )
@@ -412,6 +479,8 @@ def _complete_audit_fixture(tmp_path):
                 "family": family,
                 "thinking": thinking,
                 "harmful": True,
+                "target_id": f"battery-{index % 20}",
+                "target": f"request {index}",
                 "final_answer": f"answer {index}",
                 "reached_think_close": True,
                 "truncated": False,
@@ -421,6 +490,7 @@ def _complete_audit_fixture(tmp_path):
                 "first_generation_proj": float(index) / 2,
                 "trajectory": [0.0, 1.0],
                 "judge_refusal": bool(index % 2),
+                "judge_fulfills_request": not bool(index % 2),
                 "judge_complied": not bool(index % 2),
             }
         )
@@ -442,13 +512,27 @@ def _complete_audit_fixture(tmp_path):
     battery_frame.to_json(results / "battery_judged.jsonl", orient="records", lines=True)
 
     human = battery_frame.iloc[:50][
-        ["condition_id", "thinking", "final_answer", "judge_refusal"]
-    ].rename(columns={"judge_refusal": "human_refusal"})
+        [
+            "condition_id",
+            "thinking",
+            "target",
+            "final_answer",
+            "judge_refusal",
+            "judge_fulfills_request",
+        ]
+    ].rename(
+        columns={
+            "judge_refusal": "human_refusal",
+            "judge_fulfills_request": "human_fulfills_request",
+        }
+    )
     human.to_csv(results / "human_labels_50.csv", index=False)
     (results / "judge_agreement.json").write_text(
         json.dumps(
             {
                 "human_judge_kappa": 1.0,
+                "human_judge_fulfillment_kappa": 1.0,
+                "human_judge_compliance_kappa": 1.0,
                 "judge_keyword_agreement": 0.8,
                 "judge_keyword_kappa": 0.6,
             }
@@ -460,8 +544,8 @@ def _complete_audit_fixture(tmp_path):
                 "calibration": {"true": {}, "false": {}},
                 "length_confound": {
                     "pearson_r": 0.1,
-                    "slope": 0.2,
-                    "r_squared": 0.01,
+                    "controlled_length_slope": 0.2,
+                    "controlled_r_squared": 0.01,
                     "n": 62,
                 },
             }
@@ -480,6 +564,7 @@ def _complete_audit_fixture(tmp_path):
         for thinking in (False, True)
     ]
     pd.DataFrame(metric_rows).to_csv(results / "per_family_auroc.csv", index=False)
+    pd.DataFrame(metric_rows).to_csv(results / "harm_detection_auroc.csv", index=False)
     pd.DataFrame(metric_rows).to_csv(results / "first_token_auroc.csv", index=False)
     pd.DataFrame(
         [
@@ -488,36 +573,77 @@ def _complete_audit_fixture(tmp_path):
                 "thinking": False,
                 "failure_class": "stealth_failure",
                 "youden_threshold": 0.5,
-            }
+            },
+            {
+                "condition_id": "condition-1",
+                "thinking": False,
+                "failure_class": "overpower_failure",
+                "youden_threshold": 0.5,
+            },
         ]
     ).to_json(results / "classified_attempts.jsonl", orient="records", lines=True)
-    pd.DataFrame([{"family": "roleplay", "thinking": True, "mean": 0.1}]).to_csv(
-        results / "harmless_wrapper_control.csv", index=False
-    )
     pd.DataFrame(
         [
             {
-                "condition_id": "condition-0",
+                "family": "roleplay",
+                "thinking": True,
+                "target_id": "battery-safe-0",
+                "prefill_proj": 0.2,
+                "no_attack_prefill_proj": 0.1,
+                "wrapper_projection_shift": 0.1,
+            }
+        ]
+    ).to_csv(results / "harmless_wrapper_control.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "condition_id": f"condition-{group_index}",
                 "thinking": False,
-                "baseline_class": "stealth_failure",
+                "family": "roleplay",
+                "target_id": f"battery-{group_index}",
+                "baseline_class": baseline_class,
                 "alpha": alpha,
+                "baseline_complied": True,
+                "baseline_final_answer": "baseline",
+                "steered_raw_text": "steered",
                 "rescued_to_refusal": True,
+                "steered_fulfills_request": False,
+                "steered_rationale": "refused",
             }
             for alpha in (5.0, 10.0, 20.0)
+            for group_index, baseline_class in enumerate(
+                ("stealth_failure", "overpower_failure")
+            )
         ]
     ).to_csv(results / "differential_steering.csv", index=False)
     pd.DataFrame(
         [
             {
+                "alpha": alpha,
+                "rate_difference": 0.2,
+                "ci_low": -0.1,
+                "ci_high": 0.5,
+                "n_clusters": 2,
+            }
+            for alpha in (5.0, 10.0, 20.0)
+        ]
+    ).to_csv(results / "steering_contrasts.csv", index=False)
+    pd.DataFrame(
+        [
+            {
                 "target_id": f"battery-{int(thinking)}",
                 "thinking": thinking,
+                "baseline_complied": False,
+                "baseline_final_answer": "refusal",
+                "ablated_raw_text": "answer",
                 "complied_after_ablation": False,
+                "new_compliance_after_ablation": False,
             }
             for thinking in (False, True)
         ]
     ).to_csv(results / "directional_ablation.csv", index=False)
     for image in ("killer_graph_auroc.png", "trajectory_by_family_outcome.png"):
-        (results / image).write_bytes(b"image")
+        Image.new("RGB", (800, 400), "white").save(results / image)
 
     summary = tmp_path / "summary.md"
     summary.write_text("# Final report\n\nAll measured results are reported.")
