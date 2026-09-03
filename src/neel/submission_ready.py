@@ -711,6 +711,21 @@ def run_battery(
         families = sorted({row["family"] for row in conditions})
         for family in families:
             family_rows = [row for row in conditions if row["family"] == family]
+            cache_path = (
+                Path(cache_dir)
+                / f"{family}__thinking_{str(thinking).lower()}.jsonl"
+            )
+            if cache_path.exists():
+                cached_rows = [
+                    json.loads(line)
+                    for line in cache_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                expected_ids = {row["condition_id"] for row in family_rows}
+                cached_ids = {row.get("condition_id") for row in cached_rows}
+                if expected_ids == cached_ids:
+                    records.extend(cached_rows)
+                    continue
             output_rows = []
             for condition in family_rows:
                 measurement = run_attempt(condition["prompt"], thinking)

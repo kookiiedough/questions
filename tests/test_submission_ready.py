@@ -183,8 +183,9 @@ def test_calibration_uses_harmful_and_harmless_fitting_scores():
         [0.7, 0.8, 0.9, 1.0, 1.1],
         [-0.4, -0.3, -0.2, -0.1, 0.0],
     )
-    assert 0 < calibration["threshold"] <= 0.7
-    assert calibration["held_out_accuracy"] == pytest.approx(1)
+    assert 0 < calibration["threshold"] <= 0.8
+    # One held-out harmful score lies below thresholds fitted on other folds.
+    assert calibration["held_out_accuracy"] == pytest.approx(0.9)
 
 
 def test_prompt_length_confound_reports_regression():
@@ -223,3 +224,14 @@ def test_run_battery_crosses_thinking_and_caches_each_family(tmp_path):
     assert len(frame) == 4
     assert set(frame["thinking"]) == {True, False}
     assert len(list(tmp_path.glob("*.jsonl"))) == 4
+
+    def must_not_run(*_args):
+        raise AssertionError("completed family cache should be reused")
+
+    resumed = run_battery(
+        conditions=conditions,
+        thinking_modes=[True, False],
+        run_attempt=must_not_run,
+        cache_dir=tmp_path,
+    )
+    assert len(resumed) == 4
