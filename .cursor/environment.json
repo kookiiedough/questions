@@ -1,0 +1,17 @@
+{
+  "name": "questions (uv + Jupyter)",
+  "install": "curl -LsSf https://astral.sh/uv/install.sh | sh && \"$HOME/.local/bin/uv\" sync",
+  "terminals": [
+    {
+      "name": "jupyter-lab",
+      "command": "\"$HOME/.local/bin/uv\" run jupyter lab --no-browser --ip=0.0.0.0 --port=8888 --ServerApp.token='' --ServerApp.password=''",
+      "description": "JupyterLab notebook server for interactive development. Open the forwarded port 8888 (path /lab) in a browser."
+    }
+  ],
+  "ports": [
+    {
+      "name": "jupyterlab",
+      "port": 8888
+    }
+  ]
+}
