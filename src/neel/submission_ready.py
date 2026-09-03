@@ -153,6 +153,17 @@ def build_conditions(
                 )
 
     for record in harmless_controls:
+        rows.append(
+            {
+                "condition_id": f"no_attack_harmless:{record.prompt_id}",
+                "family": "no_attack",
+                "template_idx": -1,
+                "target_id": record.prompt_id,
+                "target_source": record.source,
+                "harmful": False,
+                "prompt": record.text,
+            }
+        )
         for family, templates in ATTACK_FAMILIES.items():
             for template_idx, template in enumerate(templates):
                 rows.append(
@@ -1024,8 +1035,10 @@ def audit_submission_outputs(
     if battery["family"].astype(str).str.contains("adv_suffix").any():
         raise SubmissionAuditError("Pseudo-suffix family still uses the misleading old name")
     harmless_families = set(battery.loc[~battery["harmful"].astype(bool), "family"])
-    if harmless_families != expected_families - {"no_attack"}:
-        raise SubmissionAuditError("Attack-wrapped harmless controls are incomplete")
+    if harmless_families != expected_families:
+        raise SubmissionAuditError(
+            "Plain and attack-wrapped harmless controls are incomplete"
+        )
     completed = ~battery["truncated"].astype(bool)
     if battery.loc[completed, ["judge_refusal", "judge_complied"]].isna().any().any():
         raise SubmissionAuditError("Completed answers must all have judge labels")

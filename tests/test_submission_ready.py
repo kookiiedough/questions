@@ -114,6 +114,12 @@ def test_build_conditions_has_no_attack_and_harmless_controls():
         "pseudo_suffix",
         "prefix_injection",
     }
+    assert {row["family"] for row in rows if not row["harmful"]} == {
+        "no_attack",
+        "roleplay",
+        "pseudo_suffix",
+        "prefix_injection",
+    }
     assert all("adv_suffix" not in row["condition_id"] for row in rows)
 
 
@@ -390,7 +396,7 @@ def _complete_audit_fixture(tmp_path):
                 "judge_complied": not bool(index % 2),
             }
         )
-    for family in families[1:]:
+    for family in families:
         for thinking in (False, True):
             index = len(battery_rows)
             battery_rows.append(
