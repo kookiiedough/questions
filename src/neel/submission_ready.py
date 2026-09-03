@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from copy import copy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -338,13 +339,50 @@ def run_generation_with_trajectory(
     }
 
 
+def _decoder_hidden(output: Any) -> Any:
+    """Return decoder hidden states from tensor or sequence layer outputs."""
+
+    import torch
+
+    if torch.is_tensor(output):
+        return output
+    if isinstance(output, (tuple, list)) and output:
+        return output[0]
+    raise TypeError(
+        "Decoder layer output must be a tensor or a non-empty tuple/list, "
+        f"got {type(output).__name__}"
+    )
+
+
+def _replace_decoder_hidden(output: Any, hidden: Any) -> Any:
+    """Replace hidden states without changing the decoder output container."""
+
+    import torch
+
+    if torch.is_tensor(output):
+        return hidden
+    if isinstance(output, tuple):
+        values = (hidden, *output[1:])
+        if type(output) is tuple:
+            return values
+        try:
+            return type(output)(*values)
+        except TypeError:
+            return type(output)(values)
+    if isinstance(output, list):
+        result = copy(output)
+        result[0] = hidden
+        return result
+    raise TypeError(f"Unsupported decoder output type: {type(output).__name__}")
+
+
 def make_add_hook(vector: Any, alpha: float) -> Callable[..., Any]:
     """Add a direction at the final sequence position."""
 
     def hook(_module: Any, _inputs: Any, output: Any) -> Any:
-        hidden = output[0].clone()
+        hidden = _decoder_hidden(output).clone()
         hidden[:, -1, :] += alpha * vector.to(hidden.device, hidden.dtype)
-        return (hidden,) + output[1:]
+        return _replace_decoder_hidden(output, hidden)
 
     return hook
 
@@ -353,11 +391,11 @@ def make_ablation_hook(unit_vector: Any) -> Callable[..., Any]:
     """Remove the component parallel to a unit direction."""
 
     def hook(_module: Any, _inputs: Any, output: Any) -> Any:
-        hidden = output[0].clone()
+        hidden = _decoder_hidden(output).clone()
         vector = unit_vector.to(hidden.device, hidden.dtype)
         final = hidden[:, -1, :]
         hidden[:, -1, :] = final - (final @ vector).unsqueeze(-1) * vector
-        return (hidden,) + output[1:]
+        return _replace_decoder_hidden(output, hidden)
 
     return hook
 

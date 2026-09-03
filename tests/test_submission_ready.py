@@ -19,6 +19,8 @@ from neel.submission_ready import (
     generation_budget,
     held_out_youden_thresholds,
     judge_final_answer,
+    make_ablation_hook,
+    make_add_hook,
     parse_judge_result,
     prompt_length_confound,
     run_battery,
@@ -54,6 +56,47 @@ def test_split_trace(text, expected):
 def test_generation_budget_matches_thinking_mode():
     assert generation_budget(True) == 1024
     assert generation_budget(False) == 256
+
+
+@pytest.mark.parametrize("container_type", ["tensor", "tuple", "list"])
+def test_add_hook_preserves_container_and_only_changes_final_position(container_type):
+    torch = pytest.importorskip("torch")
+    hidden = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+    if container_type == "tuple":
+        output = (hidden, "cache")
+    elif container_type == "list":
+        output = [hidden, "cache"]
+    else:
+        output = hidden
+
+    result = make_add_hook(torch.ones(4), alpha=2.0)(None, None, output)
+    result_hidden = result if torch.is_tensor(result) else result[0]
+
+    assert type(result) is type(output)
+    torch.testing.assert_close(result_hidden[:, :-1, :], hidden[:, :-1, :])
+    torch.testing.assert_close(result_hidden[:, -1, :], hidden[:, -1, :] + 2)
+    torch.testing.assert_close(
+        hidden, torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+    )
+
+
+@pytest.mark.parametrize("container_type", ["tensor", "tuple", "list"])
+def test_ablation_hook_preserves_container_and_removes_final_projection(container_type):
+    torch = pytest.importorskip("torch")
+    hidden = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
+    if container_type == "tuple":
+        output = (hidden, "cache")
+    elif container_type == "list":
+        output = [hidden, "cache"]
+    else:
+        output = hidden
+
+    result = make_ablation_hook(torch.tensor([1.0, 0.0]))(None, None, output)
+    result_hidden = result if torch.is_tensor(result) else result[0]
+
+    assert type(result) is type(output)
+    torch.testing.assert_close(result_hidden, torch.tensor([[[1.0, 2.0], [0.0, 4.0]]]))
+    torch.testing.assert_close(hidden, torch.tensor([[[1.0, 2.0], [3.0, 4.0]]]))
 
 
 def test_build_conditions_has_no_attack_and_harmless_controls():
