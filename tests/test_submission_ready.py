@@ -6,7 +6,9 @@ import pytest
 
 from neel.submission_ready import (
     PromptRecord,
+    SubmissionAuditError,
     agreement_metrics,
+    audit_submission_outputs,
     bootstrap_auroc,
     build_conditions,
     cache_family,
@@ -235,3 +237,181 @@ def test_run_battery_crosses_thinking_and_caches_each_family(tmp_path):
         cache_dir=tmp_path,
     )
     assert len(resumed) == 4
+
+
+def _complete_audit_fixture(tmp_path):
+    results = tmp_path / "results"
+    results.mkdir()
+    fitting_harmful = [
+        {
+            "prompt_id": f"fit-h-{index}",
+            "source": "JailbreakBench/JBB-Behaviors",
+        }
+        for index in range(50)
+    ]
+    fitting_harmless = [
+        {"prompt_id": f"fit-s-{index}", "source": "tatsu-lab/alpaca"}
+        for index in range(50)
+    ]
+    battery_targets = [
+        {
+            "prompt_id": f"battery-{index}",
+            "source": "JailbreakBench/JBB-Behaviors",
+        }
+        for index in range(20)
+    ]
+    (results / "prompt_manifest.json").write_text(
+        json.dumps(
+            {
+                "fitting_harmful": fitting_harmful,
+                "fitting_harmless": fitting_harmless,
+                "battery_harmful": battery_targets,
+            }
+        )
+    )
+    (results / "direction_report.json").write_text(
+        json.dumps({"direction_cosine": 0.95})
+    )
+
+    families = ["no_attack", "roleplay", "pseudo_suffix", "prefix_injection"]
+    battery_rows = []
+    for index in range(56):
+        family = families[index % len(families)]
+        thinking = bool((index // len(families)) % 2)
+        battery_rows.append(
+            {
+                "condition_id": f"condition-{index}",
+                "family": family,
+                "thinking": thinking,
+                "harmful": True,
+                "final_answer": f"answer {index}",
+                "reached_think_close": True,
+                "truncated": False,
+                "n_think_tokens": 5 if thinking else 0,
+                "n_prompt_tokens": 20,
+                "prefill_proj": float(index),
+                "first_generation_proj": float(index) / 2,
+                "trajectory": [0.0, 1.0],
+                "judge_refusal": bool(index % 2),
+                "judge_complied": not bool(index % 2),
+            }
+        )
+    for family in families[1:]:
+        for thinking in (False, True):
+            index = len(battery_rows)
+            battery_rows.append(
+                {
+                    **battery_rows[0],
+                    "condition_id": f"harmless-{family}-{thinking}",
+                    "family": family,
+                    "thinking": thinking,
+                    "harmful": False,
+                    "final_answer": "safe answer",
+                }
+            )
+    battery_frame = pd.DataFrame(battery_rows)
+    battery_frame.to_json(results / "battery_all.jsonl", orient="records", lines=True)
+    battery_frame.to_json(results / "battery_judged.jsonl", orient="records", lines=True)
+
+    human = battery_frame.iloc[:50][
+        ["condition_id", "thinking", "final_answer", "judge_refusal"]
+    ].rename(columns={"judge_refusal": "human_refusal"})
+    human.to_csv(results / "human_labels_50.csv", index=False)
+    (results / "judge_agreement.json").write_text(
+        json.dumps(
+            {
+                "human_judge_kappa": 1.0,
+                "judge_keyword_agreement": 0.8,
+                "judge_keyword_kappa": 0.6,
+            }
+        )
+    )
+    (results / "analysis_report.json").write_text(
+        json.dumps(
+            {
+                "calibration": {"true": {}, "false": {}},
+                "length_confound": {
+                    "pearson_r": 0.1,
+                    "slope": 0.2,
+                    "r_squared": 0.01,
+                    "n": 62,
+                },
+            }
+        )
+    )
+    metric_rows = [
+        {
+            "family": family,
+            "thinking": thinking,
+            "auroc": 0.7,
+            "ci_low": 0.6,
+            "ci_high": 0.8,
+            "n": 10,
+        }
+        for family in families
+        for thinking in (False, True)
+    ]
+    pd.DataFrame(metric_rows).to_csv(results / "per_family_auroc.csv", index=False)
+    pd.DataFrame(metric_rows).to_csv(results / "first_token_auroc.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "condition_id": "condition-0",
+                "thinking": False,
+                "failure_class": "stealth_failure",
+                "youden_threshold": 0.5,
+            }
+        ]
+    ).to_json(results / "classified_attempts.jsonl", orient="records", lines=True)
+    pd.DataFrame([{"family": "roleplay", "thinking": True, "mean": 0.1}]).to_csv(
+        results / "harmless_wrapper_control.csv", index=False
+    )
+    pd.DataFrame(
+        [
+            {
+                "condition_id": "condition-0",
+                "thinking": False,
+                "baseline_class": "stealth_failure",
+                "alpha": alpha,
+                "rescued_to_refusal": True,
+            }
+            for alpha in (5.0, 10.0, 20.0)
+        ]
+    ).to_csv(results / "differential_steering.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "target_id": f"battery-{int(thinking)}",
+                "thinking": thinking,
+                "complied_after_ablation": False,
+            }
+            for thinking in (False, True)
+        ]
+    ).to_csv(results / "directional_ablation.csv", index=False)
+    for image in ("killer_graph_auroc.png", "trajectory_by_family_outcome.png"):
+        (results / image).write_bytes(b"image")
+
+    summary = tmp_path / "summary.md"
+    summary.write_text("# Final report\n\nAll measured results are reported.")
+    ledger = tmp_path / "ledger.txt"
+    ledger.write_text("Corrected run only.")
+    return results, summary, ledger
+
+
+def test_completion_audit_accepts_complete_evidence(tmp_path):
+    results, summary, ledger = _complete_audit_fixture(tmp_path)
+    report = audit_submission_outputs(
+        results, summary_path=summary, ledger_path=ledger
+    )
+    assert report["status"] == "complete"
+    assert report["human_labels"] == 50
+    assert report["auroc_arms"] == 8
+
+
+def test_completion_audit_rejects_unfilled_summary(tmp_path):
+    results, summary, ledger = _complete_audit_fixture(tmp_path)
+    summary.write_text("# SKELETON — not the submission\n\nResult: [?]")
+    with pytest.raises(SubmissionAuditError, match="placeholders"):
+        audit_submission_outputs(
+            results, summary_path=summary, ledger_path=ledger
+        )

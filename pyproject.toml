@@ -21,6 +21,14 @@ dependencies = [
 [project.scripts]
 neel = "neel:main"
 
+[project.optional-dependencies]
+gpu = [
+    "accelerate>=1.14.0",
+    "nnsight>=0.7.0",
+    "torch>=2.14.0",
+    "transformers>=5.16.1",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"

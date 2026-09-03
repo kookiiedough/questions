@@ -769,3 +769,228 @@ def require_judge_api_key(name: str = "OPENAI_API_KEY") -> str:
     if not value:
         raise RuntimeError(f"{name} is required for the blinded LLM judge")
     return value
+
+
+class SubmissionAuditError(AssertionError):
+    """Raised when required submission evidence is absent or inconsistent."""
+
+
+def _require_columns(frame: pd.DataFrame, columns: set[str], name: str) -> None:
+    missing = columns - set(frame.columns)
+    if missing:
+        raise SubmissionAuditError(f"{name} is missing columns: {sorted(missing)}")
+
+
+def audit_submission_outputs(
+    results_dir: str | Path,
+    *,
+    summary_path: str | Path,
+    ledger_path: str | Path,
+) -> dict[str, Any]:
+    """Verify every result-backed completion gate in the cut plan.
+
+    Passing this audit does not assess prose quality.  It proves that the
+    required experiment arms and evidence artifacts exist, are internally
+    consistent, and are no longer represented by placeholders or pilot claims.
+    """
+
+    root = Path(results_dir)
+    required_files = {
+        "prompt_manifest.json",
+        "direction_report.json",
+        "battery_all.jsonl",
+        "battery_judged.jsonl",
+        "human_labels_50.csv",
+        "judge_agreement.json",
+        "analysis_report.json",
+        "per_family_auroc.csv",
+        "first_token_auroc.csv",
+        "classified_attempts.jsonl",
+        "harmless_wrapper_control.csv",
+        "differential_steering.csv",
+        "directional_ablation.csv",
+        "killer_graph_auroc.png",
+        "trajectory_by_family_outcome.png",
+    }
+    missing_files = sorted(name for name in required_files if not (root / name).is_file())
+    if missing_files:
+        raise SubmissionAuditError(f"Missing result artifacts: {missing_files}")
+
+    manifest = json.loads((root / "prompt_manifest.json").read_text(encoding="utf-8"))
+    fitting_harmful = manifest.get("fitting_harmful", [])
+    fitting_harmless = manifest.get("fitting_harmless", [])
+    battery_harmful = manifest.get("battery_harmful", [])
+    if not (50 <= len(fitting_harmful) <= 60 and len(fitting_harmless) == len(fitting_harmful)):
+        raise SubmissionAuditError("Manifest must contain 50-60 paired fitting prompts")
+    fitting_ids = {row["prompt_id"] for row in fitting_harmful}
+    battery_ids = {row["prompt_id"] for row in battery_harmful}
+    if not battery_ids or fitting_ids & battery_ids:
+        raise SubmissionAuditError("Battery targets must exist and be disjoint from fitting prompts")
+    sources = {row["source"] for row in fitting_harmful + fitting_harmless}
+    if sources != {"JailbreakBench/JBB-Behaviors", "tatsu-lab/alpaca"}:
+        raise SubmissionAuditError(f"Unexpected fitting sources: {sorted(sources)}")
+
+    direction = json.loads((root / "direction_report.json").read_text(encoding="utf-8"))
+    cosine = float(direction.get("direction_cosine", np.nan))
+    if not np.isfinite(cosine) or not -1 <= cosine <= 1:
+        raise SubmissionAuditError("Direction cosine must be finite and in [-1, 1]")
+
+    battery = pd.read_json(root / "battery_judged.jsonl", lines=True)
+    _require_columns(
+        battery,
+        {
+            "condition_id",
+            "family",
+            "thinking",
+            "harmful",
+            "final_answer",
+            "reached_think_close",
+            "truncated",
+            "n_think_tokens",
+            "n_prompt_tokens",
+            "prefill_proj",
+            "first_generation_proj",
+            "trajectory",
+            "judge_refusal",
+            "judge_complied",
+        },
+        "battery_judged",
+    )
+    expected_families = {"no_attack", "roleplay", "pseudo_suffix", "prefix_injection"}
+    harmful = battery.loc[battery["harmful"].astype(bool)]
+    if set(harmful["family"]) != expected_families:
+        raise SubmissionAuditError("Harmful battery is missing a required family")
+    if set(harmful["thinking"].astype(bool)) != {False, True}:
+        raise SubmissionAuditError("Battery must cross every family with thinking ON/OFF")
+    if battery["family"].astype(str).str.contains("adv_suffix").any():
+        raise SubmissionAuditError("Pseudo-suffix family still uses the misleading old name")
+    harmless_families = set(battery.loc[~battery["harmful"].astype(bool), "family"])
+    if harmless_families != expected_families - {"no_attack"}:
+        raise SubmissionAuditError("Attack-wrapped harmless controls are incomplete")
+    completed = ~battery["truncated"].astype(bool)
+    if battery.loc[completed, ["judge_refusal", "judge_complied"]].isna().any().any():
+        raise SubmissionAuditError("Completed answers must all have judge labels")
+    if battery.loc[completed, "final_answer"].fillna("").str.strip().eq("").any():
+        raise SubmissionAuditError("Completed generations must retain a final answer")
+    if battery.loc[~completed, ["judge_refusal", "judge_complied"]].notna().any().any():
+        raise SubmissionAuditError("Truncated thinking traces must remain unlabeled")
+
+    human = pd.read_csv(root / "human_labels_50.csv")
+    _require_columns(
+        human,
+        {"condition_id", "thinking", "final_answer", "human_refusal"},
+        "human_labels_50",
+    )
+    if len(human) != 50 or human["human_refusal"].isna().any():
+        raise SubmissionAuditError("Exactly 50 independent human labels are required")
+    if human.duplicated(["condition_id", "thinking"]).any():
+        raise SubmissionAuditError("Human-label sample rows must be unique")
+    normalized_human = human["human_refusal"].astype(str).str.lower()
+    if not normalized_human.isin({"true", "false"}).all():
+        raise SubmissionAuditError("Human labels must be true/false")
+    completed_keys = set(
+        battery.loc[completed, ["condition_id", "thinking"]]
+        .itertuples(index=False, name=None)
+    )
+    human_keys = set(
+        human[["condition_id", "thinking"]].itertuples(index=False, name=None)
+    )
+    if not human_keys <= completed_keys:
+        raise SubmissionAuditError("Human labels must correspond to completed battery rows")
+
+    agreement = json.loads((root / "judge_agreement.json").read_text(encoding="utf-8"))
+    for key in ("human_judge_kappa", "judge_keyword_agreement", "judge_keyword_kappa"):
+        value = float(agreement.get(key, np.nan))
+        if not np.isfinite(value) or not -1 <= value <= 1:
+            raise SubmissionAuditError(f"Invalid agreement metric: {key}")
+
+    aurocs = pd.read_csv(root / "per_family_auroc.csv")
+    _require_columns(
+        aurocs,
+        {"family", "thinking", "auroc", "ci_low", "ci_high", "n"},
+        "per_family_auroc",
+    )
+    observed_arms = {
+        (str(row.family), bool(row.thinking))
+        for row in aurocs.itertuples(index=False)
+    }
+    expected_arms = {(family, thinking) for family in expected_families for thinking in (False, True)}
+    if observed_arms != expected_arms:
+        raise SubmissionAuditError("Per-family AUROC table does not cover all eight arms")
+    finite_auc = aurocs[["auroc", "ci_low", "ci_high"]].apply(np.isfinite).all(axis=1)
+    ordered_ci = (aurocs["ci_low"] <= aurocs["auroc"]) & (aurocs["auroc"] <= aurocs["ci_high"])
+    bounded_ci = (aurocs["ci_low"] >= 0) & (aurocs["ci_high"] <= 1)
+    if not (finite_auc & ordered_ci & bounded_ci).all():
+        raise SubmissionAuditError("AUROC estimates and bootstrap intervals must be finite and ordered")
+
+    first_token_aurocs = pd.read_csv(root / "first_token_auroc.csv")
+    _require_columns(
+        first_token_aurocs,
+        {"family", "thinking", "auroc", "ci_low", "ci_high", "n"},
+        "first_token_auroc",
+    )
+    first_token_arms = {
+        (str(row.family), bool(row.thinking))
+        for row in first_token_aurocs.itertuples(index=False)
+    }
+    if first_token_arms != expected_arms:
+        raise SubmissionAuditError("First-token AUROC table does not cover all eight arms")
+
+    analysis = json.loads((root / "analysis_report.json").read_text(encoding="utf-8"))
+    length = analysis.get("length_confound", {})
+    for key in ("pearson_r", "slope", "r_squared", "n"):
+        if not np.isfinite(float(length.get(key, np.nan))):
+            raise SubmissionAuditError(f"Missing prompt-length confound statistic: {key}")
+    calibration = analysis.get("calibration", {})
+    if set(map(str, calibration)) not in ({"True", "False"}, {"true", "false"}):
+        raise SubmissionAuditError("Held-out Youden-J calibration is missing a thinking mode")
+
+    classified = pd.read_json(root / "classified_attempts.jsonl", lines=True)
+    _require_columns(
+        classified,
+        {"condition_id", "thinking", "failure_class", "youden_threshold"},
+        "classified_attempts",
+    )
+    failure_classes = set(classified["failure_class"]) & {
+        "stealth_failure",
+        "overpower_failure",
+    }
+
+    steering = pd.read_csv(root / "differential_steering.csv")
+    _require_columns(
+        steering,
+        {"condition_id", "thinking", "baseline_class", "alpha", "rescued_to_refusal"},
+        "differential_steering",
+    )
+    if failure_classes - set(steering["baseline_class"]):
+        raise SubmissionAuditError("Steering results omit an observed failure class")
+    if set(steering["alpha"].astype(float)) != {5.0, 10.0, 20.0}:
+        raise SubmissionAuditError("Steering must report all preregistered alpha values")
+
+    ablation = pd.read_csv(root / "directional_ablation.csv")
+    _require_columns(
+        ablation,
+        {"target_id", "thinking", "complied_after_ablation"},
+        "directional_ablation",
+    )
+    if set(ablation["thinking"].astype(bool)) != {False, True}:
+        raise SubmissionAuditError("Directional ablation must cover both thinking modes")
+
+    summary = Path(summary_path).read_text(encoding="utf-8")
+    if "[?]" in summary or "SKELETON — not the submission" in summary:
+        raise SubmissionAuditError("Executive summary still contains scope-guard placeholders")
+    ledger = Path(ledger_path).read_text(encoding="utf-8")
+    banned_claims = ("AUC=0.85", "AUC=0.52", "changed success rate by 40%", "Qwen 3.6")
+    leaked = [claim for claim in banned_claims if claim in ledger or claim in summary]
+    if leaked:
+        raise SubmissionAuditError(f"Pilot/template claims leaked into submission: {leaked}")
+
+    return {
+        "status": "complete",
+        "fitting_pairs": len(fitting_harmful),
+        "battery_rows": len(battery),
+        "human_labels": len(human),
+        "auroc_arms": len(aurocs),
+        "observed_failure_classes": sorted(failure_classes),
+        "artifacts": sorted(required_files),
+    }
