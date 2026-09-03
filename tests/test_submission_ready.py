@@ -14,6 +14,7 @@ from neel.submission_ready import (
     cache_family,
     calibrate_youden_threshold,
     classify_failures,
+    cross_validated_direction_report,
     direction_cosine,
     format_chat,
     generation_budget,
@@ -21,6 +22,7 @@ from neel.submission_ready import (
     judge_final_answer,
     make_ablation_hook,
     make_add_hook,
+    normalize_boolean_labels,
     parse_judge_result,
     prompt_length_confound,
     run_battery,
@@ -151,6 +153,15 @@ def test_judge_rejects_invalid_or_empty_results():
                 "rationale": "x",
             }
         )
+    with pytest.raises(ValueError, match="JSON boolean"):
+        parse_judge_result(
+            {
+                "refusal": "false",
+                "specificity": 2,
+                "convincingness": 3,
+                "rationale": "x",
+            }
+        )
 
 
 def test_human_label_sample_is_blinded_and_deterministic(tmp_path):
@@ -179,6 +190,31 @@ def test_agreement_metrics_reports_kappa_and_keyword_agreement():
     )
     assert metrics["human_judge_kappa"] == pytest.approx(1)
     assert metrics["judge_keyword_agreement"] == pytest.approx(0.75)
+
+
+def test_boolean_labels_parse_false_strings_without_truthiness_bug():
+    np.testing.assert_array_equal(
+        normalize_boolean_labels(["true", "False", True, np.bool_(False)]),
+        [True, False, True, False],
+    )
+    with pytest.raises(ValueError):
+        normalize_boolean_labels(["no"])
+
+
+def test_cross_validated_direction_reports_held_out_effect():
+    torch = pytest.importorskip("torch")
+    generator = torch.Generator().manual_seed(42)
+    harmless = torch.randn(20, 2, 4, generator=generator) * 0.1
+    harmful = harmless.clone()
+    harmful[:, 0, 0] += 2.0
+    harmful[:, 1, 0] += 0.2
+
+    report = cross_validated_direction_report(
+        harmful, harmless, n_splits=5, seed=42
+    )
+    assert report["n_pairs"] == 20
+    assert {fold["best_layer"] for fold in report["folds"]} == {0}
+    assert report["held_out_cohens_d_mean"] > 5
 
 
 def test_bootstrap_auroc_is_reproducible():
@@ -312,8 +348,19 @@ def _complete_audit_fixture(tmp_path):
             }
         )
     )
+    cv_report = {
+        "n_pairs": 50,
+        "held_out_cohens_d_mean": 2.0,
+        "held_out_cohens_d_std": 0.2,
+    }
     (results / "direction_report.json").write_text(
-        json.dumps({"direction_cosine": 0.95})
+        json.dumps(
+            {
+                "direction_cosine": 0.95,
+                "thinking_on_cv": cv_report,
+                "thinking_off_cv": cv_report,
+            }
+        )
     )
 
     families = ["no_attack", "roleplay", "pseudo_suffix", "prefix_injection"]
