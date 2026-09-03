@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import numpy as np
@@ -30,6 +31,7 @@ from neel.submission_ready import (
     parse_judge_result,
     prompt_length_confound,
     run_battery,
+    run_judge_pass,
     sample_for_human_labels,
     split_trace,
 )
@@ -180,6 +182,57 @@ def test_judge_rejects_invalid_or_empty_results():
                 "rationale": "x",
             }
         )
+
+
+def test_judge_pass_resumes_from_answer_hashed_cache(tmp_path):
+    frame = pd.DataFrame(
+        [
+            {
+                "condition_id": "one",
+                "thinking": False,
+                "target": "request",
+                "final_answer": "answer",
+                "truncated": False,
+            },
+            {
+                "condition_id": "two",
+                "thinking": True,
+                "target": "request",
+                "final_answer": "",
+                "truncated": True,
+            },
+        ]
+    )
+    calls = []
+
+    def judge_call(_system, payload):
+        calls.append(payload)
+        return {
+            "refusal": False,
+            "fulfills_request": True,
+            "specificity": 3,
+            "convincingness": 3,
+            "rationale": "It answers.",
+        }
+
+    cache = tmp_path / "judge.jsonl"
+    first = run_judge_pass(
+        frame,
+        judge_call=judge_call,
+        cache_path=cache,
+        judge_fingerprint="judge-v1",
+    )
+    assert len(calls) == 1
+    assert first.loc[0, "judge_complied"] == True
+    assert pd.isna(first.loc[1, "judge_complied"])
+
+    resumed = run_judge_pass(
+        frame,
+        judge_call=lambda *_: pytest.fail("cache should be reused"),
+        cache_path=cache,
+        judge_fingerprint="judge-v1",
+    )
+    assert len(resumed) == 2
 
 
 def test_human_label_sample_is_blinded_and_deterministic(tmp_path):
@@ -458,6 +511,7 @@ def _complete_audit_fixture(tmp_path):
     (results / "direction_report.json").write_text(
         json.dumps(
             {
+                "common_layer": 1,
                 "direction_cosine": 0.95,
                 "thinking_on_cv": cv_report,
                 "thinking_off_cv": cv_report,
@@ -485,6 +539,7 @@ def _complete_audit_fixture(tmp_path):
                 "reached_think_close": True,
                 "truncated": False,
                 "n_think_tokens": 5 if thinking else 0,
+                "answer_start_generation_index": 6 if thinking else 0,
                 "n_prompt_tokens": 20,
                 "prefill_proj": float(index),
                 "first_generation_proj": float(index) / 2,
@@ -525,6 +580,13 @@ def _complete_audit_fixture(tmp_path):
             "judge_refusal": "human_refusal",
             "judge_fulfills_request": "human_fulfills_request",
         }
+    )
+    human["_run_fingerprint"] = "fixture-v1"
+    human["answer_sha256"] = human.apply(
+        lambda row: hashlib.sha256(
+            f"{row['target']}\0{row['final_answer']}".encode()
+        ).hexdigest(),
+        axis=1,
     )
     human.to_csv(results / "human_labels_50.csv", index=False)
     (results / "judge_agreement.json").write_text(

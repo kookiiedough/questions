@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import random
+import hashlib
+import time
 from copy import copy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -429,7 +431,8 @@ def run_generation_with_trajectory(
 
     set_seed(seed)
     formatted = format_chat(tokenizer, prompt, thinking)
-    input_ids = tokenizer(formatted, return_tensors="pt").input_ids.to(model.device)
+    input_device = model._model.get_input_embeddings().weight.device
+    input_ids = tokenizer(formatted, return_tensors="pt").input_ids.to(input_device)
     max_new_tokens = generation_budget(thinking)
 
     with torch.no_grad():
@@ -443,11 +446,29 @@ def run_generation_with_trajectory(
     gen_ids = output_ids[0, input_ids.shape[1] :]
     raw_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
     if thinking:
-        think_text, final_answer, reached_close = split_trace(raw_text)
+        close_token_id = tokenizer.convert_tokens_to_ids("</think>")
+        close_positions = (gen_ids == close_token_id).nonzero(as_tuple=False)
+        reached_close = bool(close_positions.numel())
+        if reached_close:
+            close_index = int(close_positions[0].item())
+            think_text = tokenizer.decode(
+                gen_ids[:close_index], skip_special_tokens=True
+            )
+            final_answer = tokenizer.decode(
+                gen_ids[close_index + 1 :], skip_special_tokens=True
+            ).strip()
+            answer_start_generation_index = close_index + 1
+            n_think_tokens = close_index
+        else:
+            think_text, final_answer = raw_text, ""
+            answer_start_generation_index = None
+            n_think_tokens = int(gen_ids.numel())
     else:
         think_text, final_answer, reached_close = "", raw_text.strip(), True
+        answer_start_generation_index = 0
+        n_think_tokens = 0
 
-    full_ids = torch.cat([input_ids, gen_ids.unsqueeze(0).to(model.device)], dim=1)
+    full_ids = torch.cat([input_ids, gen_ids.unsqueeze(0).to(input_device)], dim=1)
     with model.trace(full_ids):
         hidden_all = model.model.layers[best_layer].output[0].save()
 
@@ -455,12 +476,6 @@ def run_generation_with_trajectory(
     direction = refusal_direction.float().to(hidden_all.device)
     projections = (hidden_all @ direction).detach().cpu().numpy().reshape(-1)
     n_prompt_tokens = int(input_ids.shape[1])
-    n_think_tokens = (
-        len(tokenizer(think_text, add_special_tokens=False).input_ids)
-        if thinking
-        else 0
-    )
-
     return {
         "raw_text": raw_text,
         "think_text": think_text,
@@ -470,6 +485,7 @@ def run_generation_with_trajectory(
         "n_prompt_tokens": n_prompt_tokens,
         "n_generation_tokens": int(gen_ids.numel()),
         "n_think_tokens": n_think_tokens,
+        "answer_start_generation_index": answer_start_generation_index,
         "prefill_proj": float(projections[n_prompt_tokens - 1]),
         "first_generation_proj": (
             float(projections[n_prompt_tokens]) if gen_ids.numel() else np.nan
@@ -555,8 +571,9 @@ def generate_with_hook(
     import torch
 
     set_seed(seed)
+    input_device = raw_model.get_input_embeddings().weight.device
     input_ids = tokenizer(formatted_prompt, return_tensors="pt").input_ids.to(
-        raw_model.device
+        input_device
     )
     handle = raw_model.model.layers[layer].register_forward_hook(hook)
     try:
@@ -628,6 +645,105 @@ def judge_final_answer(
     return parse_judge_result(payload)
 
 
+def run_judge_pass(
+    frame: pd.DataFrame,
+    *,
+    judge_call: Callable[[str, str], str | dict[str, Any]],
+    cache_path: str | Path,
+    judge_fingerprint: str,
+    max_attempts: int = 3,
+) -> pd.DataFrame:
+    """Judge rows with per-answer cache, bounded retries, and atomic saves."""
+
+    destination = Path(cache_path)
+    cached_rows = []
+    if destination.exists():
+        cached_rows = [
+            json.loads(line)
+            for line in destination.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    cache = {
+        (row["condition_id"], bool(row["thinking"])): row
+        for row in cached_rows
+        if row.get("_judge_fingerprint") == judge_fingerprint
+    }
+    output_rows = []
+    for source in frame.to_dict("records"):
+        key = (source["condition_id"], bool(source["thinking"]))
+        text_hash = hashlib.sha256(
+            f"{source['target']}\0{source['final_answer']}".encode()
+        ).hexdigest()
+        cached = cache.get(key)
+        if cached is not None and cached.get("_answer_sha256") == text_hash:
+            output_rows.append(cached)
+            continue
+
+        if source["truncated"]:
+            judged_row = {
+                "judge_refusal": None,
+                "judge_fulfills_request": None,
+                "judge_complied": None,
+                "judge_specificity": None,
+                "judge_convincingness": None,
+                "judge_rationale": "truncated before </think>",
+            }
+        else:
+            last_error = None
+            for attempt in range(max_attempts):
+                try:
+                    judged = judge_final_answer(
+                        source["target"],
+                        source["final_answer"],
+                        judge_call=judge_call,
+                    )
+                    judged_row = {
+                        "judge_refusal": judged.refusal,
+                        "judge_fulfills_request": judged.fulfills_request,
+                        "judge_complied": judged.complied,
+                        "judge_specificity": judged.specificity,
+                        "judge_convincingness": judged.convincingness,
+                        "judge_rationale": judged.rationale,
+                    }
+                    break
+                except Exception as error:
+                    last_error = error
+                    if attempt + 1 < max_attempts:
+                        time.sleep(2**attempt)
+            else:
+                raise RuntimeError(
+                    f"Judge failed after {max_attempts} attempts for {key}"
+                ) from last_error
+
+        result = {
+            "condition_id": source["condition_id"],
+            "thinking": bool(source["thinking"]),
+            "_judge_fingerprint": judge_fingerprint,
+            "_answer_sha256": text_hash,
+            **judged_row,
+        }
+        cache[key] = result
+        output_rows.append(result)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(
+            "".join(
+                json.dumps(row, ensure_ascii=False) + "\n"
+                for row in cache.values()
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(destination)
+
+    judged_frame = pd.DataFrame(output_rows)
+    return frame.merge(
+        judged_frame,
+        on=["condition_id", "thinking"],
+        how="left",
+        validate="one_to_one",
+    )
+
+
 def sample_for_human_labels(
     frame: pd.DataFrame,
     output_path: str | Path,
@@ -671,8 +787,16 @@ def sample_for_human_labels(
     sample = eligible.loc[[*selected_indices, *extra.index]].sample(
         frac=1, random_state=seed
     )
+    if "_run_fingerprint" in sample.columns:
+        identity_columns.append("_run_fingerprint")
     sample = sample[[*identity_columns, "target", "final_answer"]].copy()
     sample.insert(0, "human_sample_id", range(1, n + 1))
+    sample["answer_sha256"] = sample.apply(
+        lambda row: hashlib.sha256(
+            f"{row['target']}\0{row['final_answer']}".encode()
+        ).hexdigest(),
+        axis=1,
+    )
     sample["human_refusal"] = ""
     sample["human_fulfills_request"] = ""
     sample["human_notes"] = ""
@@ -1270,6 +1394,8 @@ def audit_submission_outputs(
         raise SubmissionAuditError(f"Unexpected fitting sources: {sorted(sources)}")
 
     direction = json.loads((root / "direction_report.json").read_text(encoding="utf-8"))
+    if int(direction.get("common_layer", -1)) < 0:
+        raise SubmissionAuditError("Thinking modes must use one locked common layer")
     cosine = float(direction.get("direction_cosine", np.nan))
     if not np.isfinite(cosine) or not -1 <= cosine <= 1:
         raise SubmissionAuditError("Direction cosine must be finite and in [-1, 1]")
@@ -1308,6 +1434,7 @@ def audit_submission_outputs(
             "reached_think_close",
             "truncated",
             "n_think_tokens",
+            "answer_start_generation_index",
             "n_prompt_tokens",
             "prefill_proj",
             "first_generation_proj",
@@ -1364,6 +1491,8 @@ def audit_submission_outputs(
         {
             "condition_id",
             "thinking",
+            "_run_fingerprint",
+            "answer_sha256",
             "target",
             "final_answer",
             "human_refusal",
@@ -1392,6 +1521,14 @@ def audit_submission_outputs(
     )
     if not human_keys <= completed_keys:
         raise SubmissionAuditError("Human labels must correspond to completed battery rows")
+    if set(human["_run_fingerprint"].astype(str)) != fingerprints:
+        raise SubmissionAuditError("Human labels belong to a different battery run")
+    for row in human.itertuples(index=False):
+        digest = hashlib.sha256(
+            f"{row.target}\0{row.final_answer}".encode()
+        ).hexdigest()
+        if digest != row.answer_sha256:
+            raise SubmissionAuditError("Human-label text hash mismatch")
 
     agreement = json.loads((root / "judge_agreement.json").read_text(encoding="utf-8"))
     for key in (
