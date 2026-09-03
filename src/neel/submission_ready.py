@@ -654,24 +654,39 @@ def bootstrap_auroc(
     y_true: Sequence[int | bool],
     scores: Sequence[float],
     *,
+    clusters: Sequence[Any] | None = None,
     n_bootstrap: int = 2000,
     confidence: float = 0.95,
     seed: int = SEED,
 ) -> dict[str, float]:
-    """AUROC and percentile bootstrap confidence interval."""
+    """AUROC and percentile bootstrap CI, resampling independent clusters."""
 
     y = np.asarray(y_true, dtype=int)
     values = np.asarray(scores, dtype=float)
+    cluster_values = (
+        np.arange(len(y), dtype=object)
+        if clusters is None
+        else np.asarray(clusters, dtype=object)
+    )
+    if len(cluster_values) != len(y):
+        raise ValueError("clusters must have the same length as labels")
     valid = np.isfinite(values)
     y, values = y[valid], values[valid]
+    cluster_values = cluster_values[valid]
     if len(np.unique(y)) != 2:
         raise ValueError("AUROC requires both outcome classes")
 
     auc = float(roc_auc_score(y, values))
     rng = np.random.default_rng(seed)
+    unique_clusters = np.unique(cluster_values)
     boot: list[float] = []
     while len(boot) < n_bootstrap:
-        indices = rng.integers(0, len(y), size=len(y))
+        sampled_clusters = rng.choice(
+            unique_clusters, size=len(unique_clusters), replace=True
+        )
+        indices = np.concatenate(
+            [np.flatnonzero(cluster_values == cluster) for cluster in sampled_clusters]
+        )
         if len(np.unique(y[indices])) == 2:
             boot.append(float(roc_auc_score(y[indices], values[indices])))
     alpha = (1 - confidence) / 2
@@ -688,6 +703,7 @@ def per_condition_aurocs(
     *,
     label_column: str = "judge_complied",
     score_column: str = "prefill_proj",
+    cluster_column: str = "target_id",
     n_bootstrap: int = 2000,
 ) -> pd.DataFrame:
     rows = []
@@ -697,6 +713,7 @@ def per_condition_aurocs(
             stats = bootstrap_auroc(
                 group[label_column],
                 group[score_column],
+                clusters=group[cluster_column],
                 n_bootstrap=n_bootstrap,
             )
         except ValueError:
@@ -861,6 +878,7 @@ def run_battery(
     thinking_modes: Sequence[bool],
     run_attempt: Callable[[str, bool], dict[str, Any]],
     cache_dir: str | Path,
+    run_fingerprint: str,
 ) -> pd.DataFrame:
     """Run and cache each family independently so interrupted runs resume."""
 
@@ -881,13 +899,23 @@ def run_battery(
                 ]
                 expected_ids = {row["condition_id"] for row in family_rows}
                 cached_ids = {row.get("condition_id") for row in cached_rows}
-                if expected_ids == cached_ids:
+                fingerprints = {
+                    row.get("_run_fingerprint") for row in cached_rows
+                }
+                if expected_ids == cached_ids and fingerprints == {run_fingerprint}:
                     records.extend(cached_rows)
                     continue
             output_rows = []
             for condition in family_rows:
                 measurement = run_attempt(condition["prompt"], thinking)
-                output_rows.append({**condition, "thinking": thinking, **measurement})
+                output_rows.append(
+                    {
+                        **condition,
+                        "thinking": thinking,
+                        "_run_fingerprint": run_fingerprint,
+                        **measurement,
+                    }
+                )
             cache_family(
                 output_rows,
                 cache_dir,
@@ -1010,6 +1038,7 @@ def audit_submission_outputs(
         battery,
         {
             "condition_id",
+            "_run_fingerprint",
             "family",
             "thinking",
             "harmful",
@@ -1027,6 +1056,9 @@ def audit_submission_outputs(
         "battery_judged",
     )
     expected_families = {"no_attack", "roleplay", "pseudo_suffix", "prefix_injection"}
+    fingerprints = set(battery["_run_fingerprint"].dropna().astype(str))
+    if len(fingerprints) != 1:
+        raise SubmissionAuditError("Battery rows must share one run fingerprint")
     harmful = battery.loc[battery["harmful"].astype(bool)]
     if set(harmful["family"]) != expected_families:
         raise SubmissionAuditError("Harmful battery is missing a required family")

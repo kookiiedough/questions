@@ -233,6 +233,18 @@ def test_bootstrap_auroc_is_reproducible():
     assert first["ci_low"] == pytest.approx(1)
 
 
+def test_bootstrap_auroc_resamples_target_clusters():
+    result = bootstrap_auroc(
+        [0, 0, 1, 1],
+        [0.1, 0.2, 0.8, 0.9],
+        clusters=["safe", "safe", "harmful", "harmful"],
+        n_bootstrap=50,
+    )
+    assert result["auroc"] == pytest.approx(1)
+    with pytest.raises(ValueError, match="same length"):
+        bootstrap_auroc([0, 1], [0.1, 0.9], clusters=["only-one"])
+
+
 def test_youden_threshold_is_out_of_fold_and_classifies_both_failures():
     labels = np.array([False, False, False, True, True, True] * 2)
     scores = np.array([0.1, 0.2, 0.3, 0.7, 0.8, 0.9] * 2)
@@ -308,6 +320,7 @@ def test_run_battery_crosses_thinking_and_caches_each_family(tmp_path):
             "thinking_seen": thinking,
         },
         cache_dir=tmp_path,
+        run_fingerprint="test-v1",
     )
 
     assert len(frame) == 4
@@ -322,8 +335,22 @@ def test_run_battery_crosses_thinking_and_caches_each_family(tmp_path):
         thinking_modes=[True, False],
         run_attempt=must_not_run,
         cache_dir=tmp_path,
+        run_fingerprint="test-v1",
     )
     assert len(resumed) == 4
+
+    rerun_calls = []
+    run_battery(
+        conditions=conditions,
+        thinking_modes=[True, False],
+        run_attempt=lambda prompt, thinking: rerun_calls.append(
+            (prompt, thinking)
+        )
+        or {"final_answer": prompt},
+        cache_dir=tmp_path,
+        run_fingerprint="test-v2",
+    )
+    assert len(rerun_calls) == 4
 
 
 def _complete_audit_fixture(tmp_path):
@@ -381,6 +408,7 @@ def _complete_audit_fixture(tmp_path):
         battery_rows.append(
             {
                 "condition_id": f"condition-{index}",
+                "_run_fingerprint": "fixture-v1",
                 "family": family,
                 "thinking": thinking,
                 "harmful": True,
