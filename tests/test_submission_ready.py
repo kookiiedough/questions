@@ -215,6 +215,8 @@ def test_cross_validated_direction_reports_held_out_effect():
     assert report["n_pairs"] == 20
     assert {fold["best_layer"] for fold in report["folds"]} == {0}
     assert report["held_out_cohens_d_mean"] > 5
+    assert np.isfinite(report["youden_threshold_oof"])
+    assert report["youden_held_out_accuracy"] > 0.9
 
 
 def test_bootstrap_auroc_is_reproducible():
@@ -352,6 +354,8 @@ def _complete_audit_fixture(tmp_path):
         "n_pairs": 50,
         "held_out_cohens_d_mean": 2.0,
         "held_out_cohens_d_std": 0.2,
+        "youden_threshold_oof": 0.5,
+        "youden_held_out_accuracy": 0.9,
     }
     (results / "direction_report.json").write_text(
         json.dumps(

@@ -300,6 +300,10 @@ def cross_validated_direction_report(
 
     splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
     folds = []
+    out_of_fold_scores = np.full(2 * n_pairs, np.nan, dtype=float)
+    out_of_fold_labels = np.concatenate(
+        [np.ones(n_pairs, dtype=int), np.zeros(n_pairs, dtype=int)]
+    )
     for fold, (train_indices, held_indices) in enumerate(
         splitter.split(np.arange(n_pairs)), start=1
     ):
@@ -326,6 +330,8 @@ def cross_validated_direction_report(
         held_harmless_projection = _to_numpy(
             harmless_activations[held_indices, best_layer, :] @ fold_direction
         )
+        out_of_fold_scores[held_indices] = held_harmful_projection
+        out_of_fold_scores[n_pairs + held_indices] = held_harmless_projection
         folds.append(
             {
                 "fold": fold,
@@ -340,12 +346,21 @@ def cross_validated_direction_report(
     held_effects = np.asarray(
         [row["held_out_cohens_d"] for row in folds], dtype=float
     )
+    false_positive, true_positive, thresholds = roc_curve(
+        out_of_fold_labels, out_of_fold_scores
+    )
+    youden_threshold = float(thresholds[np.argmax(true_positive - false_positive)])
+    held_out_predictions = out_of_fold_scores >= youden_threshold
     return {
         "n_pairs": int(n_pairs),
         "n_splits": int(n_splits),
         "folds": folds,
         "held_out_cohens_d_mean": float(np.mean(held_effects)),
         "held_out_cohens_d_std": float(np.std(held_effects)),
+        "youden_threshold_oof": youden_threshold,
+        "youden_held_out_accuracy": float(
+            np.mean(held_out_predictions == out_of_fold_labels)
+        ),
     }
 
 
@@ -970,7 +985,12 @@ def audit_submission_outputs(
         report = direction.get(mode_key, {})
         if int(report.get("n_pairs", 0)) < 50:
             raise SubmissionAuditError(f"{mode_key} must evaluate at least 50 pairs")
-        for metric in ("held_out_cohens_d_mean", "held_out_cohens_d_std"):
+        for metric in (
+            "held_out_cohens_d_mean",
+            "held_out_cohens_d_std",
+            "youden_threshold_oof",
+            "youden_held_out_accuracy",
+        ):
             if not np.isfinite(float(report.get(metric, np.nan))):
                 raise SubmissionAuditError(f"{mode_key} is missing {metric}")
 
