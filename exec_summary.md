@@ -1,231 +1,65 @@
-# SKELETON — not the submission
+# The cheap refusal probe still sees the harm. It does not reliably stop the answer.
 
-Every `[?]` is a number or claim I do not have yet. Two rules for using this file:
+Qwen3-4B, thinking ON vs OFF, under three jailbreak families.
 
-1. **Scope guard.** If an experiment I am tempted to run does not fill in a `[?]`
-   somewhere below, I do not run it. I have 12-20 hours.
-2. **Voice.** The prose here is placeholder. I rewrite every paragraph in my own
-   words before submitting. A write-up that reads like model output gets rejected.
+## 1. The core question and motivation
 
-Target length when filled: 1-2 pages. It has to stand alone — assume it is the
-only thing that gets read, by someone with mech interp experience but zero
-context on my project.
+An external guard model (Llama-Guard or similar) costs extra memory, latency, and a second forward pass. An internal refusal probe is one dot product of length `d_model` (2560 here) against a hidden state you already computed at the last prompt token. That is why people want these monitors: they are almost free.
 
----
+On *plain* harmful vs harmless prompts the idea works. “Do Thinking Tokens Help with Safety?” (arXiv 2606.25013) reports 0.84–0.95 AUROC for a first-thinking-token probe on Qwen3-8B and other reasoning models. AUROC here is “if I rank examples by the probe score, how often is a harmful one above a harmless one?” Chance is 0.50.
 
-## Title
+That paper did not test jailbreaks. I did, on Qwen3-4B. The question: does the cheap detector still work when someone applies a jailbreak, and does the `<think>` scratchpad help or hurt?
 
-[?] Working version: "The refusal probe survives detection but not compliance:
-stress-testing prefill refusal readouts under adversarial attack in Qwen3-4B"
+Two different failures look the same from outside:
 
----
+- **Stealth:** the probe stays quiet; the model complies anyway. The monitor is blind.
+- **Overpower:** the probe fires; the model complies anyway. The monitor saw it and generation ignored it.
 
-## What problem am I trying to solve, and why is it interesting?
+## 2. Experimental setup
 
-In reasoning models, whether the model will end up refusing is already linearly
-decodable from the hidden state at the first thinking token — 0.84-0.95 AUROC
-across Qwen3-8B, Olmo-3-7B-Think, Phi-4-Reasoning and GPT-OSS-20B
-("Do Thinking Tokens Help with Safety?", arXiv 2606.25013). The decision appears
-to be made before any visible deliberation.
+- **Model.** Qwen3-4B, 36 layers, `d_model` 2560. It has a hard `enable_thinking` switch, so ON and OFF use the same weights.
+- **Probe.** Difference-in-means (harmful minus harmless) at the last prefill token, locked at layer 35 for both modes. Fit on 60 JailbreakBench / Alpaca pairs. Battery uses 10 held-out targets.
+- **Battery.** 200 conditions × thinking ON/OFF = 400 rows. Families: roleplay, prefix injection, and hand-written pseudo-suffixes (not GCG). Also a no-attack arm and the same wrappers on harmless prompts.
+- **Sampling.** Temperature 0.6, top_p 0.95, top_k 20, seed 42.
+- **Labels.** Only the text after `</think>`. Compliance = not a refusal **and** the answer actually supplies the request. The intended judge (`gpt-5-mini`) hit a 50 request/day cap, so I used Qwen3-4B itself as a local JSON judge (StrongREJECT-style).
+- **Human check.** I scored 50 completed answers from the request and final answer only. Cohen’s kappa vs the local judge: 0.57 (refusal), 0.53 (fulfillment), 0.56 (compliance). Moderate. Not ground truth.
 
-That result is measured on plain harmful and benign prompts. The paper says so in
-its own limitations: *"our evaluation is also limited to refusal/compliance
-behavior on harmful and benign prompt sets."*
+Repo: `github.com/kookiiedough/questions`, branch `cursor/execute-submission-plan-c3b0`. Cells before 26 in `src/neel/curr.ipynb` are the broken pilot.
 
-So: nobody has checked whether the probe still works when someone is actively
-trying to break the model.
+## 3. Key findings
 
-Why I care about the answer:
+**Detection held. Compliance prediction did not.** Harm-detection AUROC (harmful vs harmless) is 0.94–1.00 under every family, including attacks. Using the same score to predict whether a *harmful* prompt would actually comply is 0.70–0.85, with wide bootstrap intervals that often reach near chance. I expected a collapse under attack. I got a split: the probe still sees that the prompt is harmful; it is a shaky predictor of whether the model will do it.
 
-- **Practical.** An internal probe is nearly free — one dot product against a
-  forward pass I am already running, versus standing up a separate guard model.
-  If it holds under attack it is the cheapest guardrail available. If it does
-  not, a lot of activation-monitoring proposals are resting on an untested
-  assumption.
-- **Mechanistic.** *Where* the probe fails tells me which stage of refusal a
-  given attack targets. Refusal is at least two steps: notice the request is
-  harmful, then act on it. An attack can defeat either one, and the probe
-  distinguishes them.
+![Figure 1. Left: compliance AUROC on harmful attempts. Right: harm-detection AUROC.](submission_artifacts/killer_graph_auroc.png)
 
-My question, in one sentence: [?]
+*Figure 1. Left panel: can the prefill score predict compliance on harmful prompts? About 0.70–0.85, wide CIs. Right panel: can it tell harmful from harmless? 0.94–1.00. Circles = thinking ON, squares = thinking OFF. Dotted line is chance (0.50). The shaded band is the published 0.84–0.95 range from other models on plain prompts, not a number I measured.*
 
----
+**Overpower, not stealth.** On completed harmful rows: 19 overpower, 7 stealth, 158 correct refusals, 10 false alarms (probe quiet, model still refused). These attacks rarely hide the harm from the readout. They break the step from “this looks bad” to “I will not do it.”
 
-## Setup
+**Thinking made jailbreaks easier.** Attack success on completed harmful attack rows: 19% with thinking ON (18/94) vs 8% with thinking OFF (8/100). During `<think>`, the projection sits near zero. Refusal vs compliance separates in the final-answer tokens, not in the notes.
 
-- **Model.** Qwen3-4B, 36 layers, d_model 2560. Picked specifically because it
-  has a hard `enable_thinking` switch, so I can toggle deliberation on
-  *identical weights* rather than comparing different models with different
-  post-training.
-- **Direction.** Difference-in-means, harmful minus harmless, at the last
-  prefill token. Layer [?] of 36, selected by [?]. Cross-validated Cohen's
-  d = [?] +/- [?] on held-out folds.
-- **Attacks.** [?] families x [?] targets = [?] attempts, each run with thinking
-  ON and OFF. Families: roleplay, prefix injection, pseudo-suffix (hand-written,
-  *not* GCG — see limitations).
-- **Outcome labels.** LLM judge, StrongREJECT-style rubric, applied to the final
-  answer only (post-`</think>`). Cohen's kappa = [?] against 50 hand labels.
+![Figure 2. Refusal-direction projection during thinking vs the final answer.](submission_artifacts/trajectory_by_family_outcome.png)
 
----
+*Figure 2. Left: inside `<think>`, the projection stays near zero for every family and outcome. Right: the final answer is where refusal and compliance pull apart.*
 
-## High-level takeaways
+**Steering rescued overpower a bit, and stealth never.** I added the refusal direction at layer 35 with α = 5, 10, 20. That restored refusal in 25–38% of overpower cases (6/16, 4/16, 5/16) and in **0** stealth cases (0/6, 0/7, 0/7). I had predicted the opposite: if stealth is “the probe was fooled,” pushing the vector should help stealth first. The gap’s confidence intervals sit entirely on the wrong side of zero.
 
-Written as predictions now so that filling them in is honest rather than
-retrofitted. If a prediction is wrong I say so and keep the original.
+![Figure 3. Fraction of failures steered back to refusal.](submission_artifacts/steering_rescue_rates.png)
 
-1. **[?] Headline.** Predicted: probe AUROC falls from [?] unattacked to [?]
-   under attack, and the fall is uneven across families.
-2. **[?] Mechanism.** Predicted: most successful attacks are *overpower*, not
-   *stealth* — the probe fires, the model complies anyway. Pilot data pointed at
-   84-100% overpower. If that holds, detection is robust and the thing that
-   breaks is the link from detection to refusal.
-3. **[?] Deliberation.** Predicted: toggling thinking leaves prefill AUROC
-   roughly unchanged, consistent with thinking being prefix completion rather
-   than deliberation.
-4. **[?] Causality.** Predicted: adding the refusal direction rescues refusal in
-   stealth cases but not overpower cases.
+*Figure 3. Stealth rescue is 0 at every α. Overpower rescue is 6/16, 4/16, 5/16.*
 
-Most interesting thing I found: [?]
+**The two thinking modes do not share a refusal vector.** Cosine similarity at layer 35 is 0.087 (almost orthogonal). Cross-validation prefers layer 34 with thinking ON and layers 22–23 with it OFF. I locked 35 so the comparison was fair. I did not get one shared direction.
 
-Most surprising thing I found: [?] — and if nothing surprised me, say that
-plainly. A project where everything went as predicted is information about the
-prediction being cheap.
+## 4. What went wrong
 
----
+The first run keyword-labeled the first 50 generated tokens. Qwen3 thinks by default, so those tokens were inside `<think>`. I was scoring the scratchpad. 36 of 150 rows looked “ambiguous.” I almost grew the keyword list. The tags were in the printout. I then split on `</think>`, left 15 truncated thinking rows unlabeled, and judged the answer.
 
-## Key experiments
+The API cap made 400 `gpt-5-mini` calls impossible. The local judge is the same 4B family as the target. Kappa 0.57 is the size of that problem. Every compliance rate above inherits it.
 
-One paragraph and one graph each. For each, I write down in advance what the
-boring explanation is, and what result would change my mind.
+I read the 50 answers myself. I did not average the ON and OFF directions after seeing cosine 0.087. I would not ship this as a guardrail.
 
-### E1. Is there a refusal direction in this model at all?
+## 5. Limits
 
-- **Why.** Table stakes. If harmful and harmless prompts do not separate, nothing
-  downstream is interpretable.
-- **Found.** [?]
-- **Graph.** Projection histograms, harmful vs harmless, layer [?].
-- **Boring explanation.** It is a prompt-length or topic direction, not a refusal
-  direction. Ruled out by [?].
-- **Note.** This is not a finding. "Safety concept is linearly represented" is a
-  known result and I am not claiming it. It exists to license E2-E5.
+One 4B model. Pseudo-suffixes, not GCG, so I cannot say optimized suffixes would stay non-stealthy. n = 50 human labels, kappa 0.57. Stealth n = 7. One sample per row at temperature 0.6. Attack wrappers shift harmless projections by about +1.5 to +9.3 and can push thinking-ON prompts over the threshold by themselves, which inflates “detected” and therefore overpower. I do not read small per-family AUROC gaps.
 
-### E2. Does the probe still predict outcomes under attack?
-
-- **Why.** The core question.
-- **Found.** [?]
-- **Graph — this is the key figure.** AUROC by attack family, thinking ON vs OFF,
-  with my own unattacked AUROC drawn as a horizontal reference line so the
-  degradation is visible without reading numbers.
-- **Baselines.** Chance = 0.50. My unattacked condition = [?]. Prompt-length
-  confound: correlation of projection with token count, r = [?].
-- **What would change my mind.** If AUROC is flat across families and close to
-  the unattacked number, H1 is dead and the story becomes "the probe is
-  surprisingly robust" — which is a fine result and I report it as such.
-
-### E3. When it fails, how does it fail — stealth or overpower?
-
-- **Why.** Separates the two stages of refusal.
-- **Found.** [?]
-- **Graph.** Prefill projection vs outcome, colored by family, with the
-  calibrated threshold marked.
-- **Threshold.** Youden-J from held-out folds, *not* the harmful/harmless
-  midpoint. The midpoint sat at -26.2 in my pilot, far enough below zero that
-  almost everything counted as "detected" and the overpower rate was inflated by
-  construction.
-- **What would change my mind.** A roughly even stealth/overpower split, or
-  stealth dominating, would invert takeaway 2.
-
-### E4. Is the direction causally doing the work — and differentially?
-
-- **Why.** A probe is correlational. This is the causal test.
-- **Design.** (a) Ablate the direction on clean harmful prompts; expect
-  compliance to rise, replicating known results and validating the direction.
-  (b) *Add* the direction during attacks and measure the rescue rate separately
-  for stealth and overpower cases.
-- **Found.** [?] rescue on stealth, [?] on overpower.
-- **Graph.** Rescue rate by pre-intervention class.
-- **Why differential matters.** The two-stage story predicts a *gap*: if the
-  probe already fired, pushing detection harder should not help, because
-  detection was never the broken part. A single global steering number cannot
-  distinguish that from a plain dose-response.
-- **What would change my mind.** Equal rescue in both classes means the
-  two-stage framing is wrong and I should describe it as monotone steering
-  strength instead.
-
-### E5. Does thinking help?
-
-- **Why.** Within-model deliberation ablation, identical weights.
-- **Found.** [?] attack success rate with thinking ON vs [?] OFF; prefill AUROC
-  [?] vs [?].
-- **Graph.** Mean projection trajectory across normalized CoT position, grouped
-  by family and eventual outcome.
-- **What would change my mind.** If projection moves substantially *during* the
-  CoT and the final outcome tracks that movement rather than the prefill value,
-  then deliberation is real here and takeaway 3 is wrong.
-
----
-
-## Controls and sanity checks
-
-- **Attack-wrapped harmless prompts.** [?] Necessary because attack wrappers are
-  far longer than my extraction prompts — without this control I cannot separate
-  "the attack changed the projection" from "long wrapper text changed the
-  projection." The guardrail interpretation of the whole result depends on this
-  coming back clean.
-- **Prompt length vs projection.** r = [?]
-- **Judge vs 50 hand labels.** kappa = [?]. Judge vs old keyword labeler: [?]
-- **Truncated generations.** [?] rows never emitted `</think>`; reported
-  separately, not silently labeled.
-- **Direction stability across thinking modes.** cosine similarity = [?]
-
----
-
-## What went wrong (keeping this in on purpose)
-
-My first run labeled outcomes by keyword-matching the first 50 generated tokens.
-Qwen3 thinks by default, so those 50 tokens were almost entirely the reasoning
-trace — I was labeling the model's private deliberation instead of its answer.
-36 of 150 rows came back "ambiguous" and my first instinct was to expand the
-keyword list, which papered over the symptom. The `<think>` tags were visible in
-the output I printed to inspect those rows; I had the evidence and did not follow
-it for [?] hours.
-
-Before: [?]. After: [?].
-
-Lesson: [?]
-
----
-
-## Limitations
-
-- One model, one size. No claim about generalization.
-- The "adversarial suffix" family is hand-written compliance bait, not
-  GCG-optimized. This is the weakest part of the design, and it matters
-  specifically because my original hypothesis predicted that *suffixes* would be
-  the stealthy family. I cannot test that claim with these strings, and I say so
-  rather than letting the family name imply otherwise.
-- One sample per row at temperature 0.6. No variance estimate over sampling.
-- Judge reliability is kappa = [?]; all outcome-dependent numbers inherit that.
-- Direction fit on extreme-harm prompts. Probably does not transfer to borderline
-  or dual-use content, which is where real deployments live.
-- n per family is small; all AUROCs carry bootstrap CIs and I do not read
-  differences smaller than those CIs.
-
----
-
-## Dual use
-
-[?] Short and honest. Something that predicts which attacks work is useful for
-building defenses and useful for building attacks. State the asymmetry I think
-applies here — [?] — and note that I am not releasing optimized attack strings.
-
----
-
-## Where I would go next
-
-The measurement in this project is not really about refusal. It is: does the
-model internally represent X while outputting not-X? Refusal is just the case
-where I have clean ground truth for both halves. The same instrument should
-apply to sandbagging, evaluation-awareness, and resistance to secret
-elicitation — [?] one paragraph on which of these I would try first and what the
-cheapest version of that experiment looks like.
+A score that says “this still looks harmful inside” is more useful to a defender than to an attacker. On this battery stealth is rare, and I am not releasing optimized attack strings. These numbers are not a production monitor.

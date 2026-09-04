@@ -1,49 +1,36 @@
-decided to use zed
+Research ledger
 
-for rapid protoptyping and feedback loops need to setup notebook interface -done
+I settled on one question: can a refusal-direction probe predict model
+behavior when the prompt is under attack, and can its failures distinguish
+missed harm detection from compliance despite detection?
 
+The first pilot used Qwen3-4B and showed strong harmful/harmless
+separation on a small hand-written fitting set. That observation is only
+a pilot. The first labeling pass scored the first 50 generated tokens
+with keywords. Qwen3 was thinking by default, so those tokens were
+mostly inside `<think>`. Apparent compliance counts and the 36 ambiguous
+rows from that pass describe the reasoning trace, not the final answer.
+I kept the pilot notebook as an audit trail and excluded every pilot
+outcome number from the submission.
 
-picked idea - guided by usefulness ot autored kill two birds with one stone , taken a bit of time shuflfing between claude lamrena and deepseek
+Corrected run (Qwen3-4B, 60 disjoint JailbreakBench/Alpaca fitting pairs,
+10 battery targets, 400 rows, local JSON judge, 50 independent labels):
 
-settled on
+- Common layer 35. Thinking-on vs thinking-off direction cosine 0.087.
+- Held-out Cohen's d 6.61 ± 2.14 (ON) and 7.92 ± 2.31 (OFF).
+- Harm-detection AUROC 0.94–1.00 under every family, including attack.
+- Compliance AUROC on harmful rows 0.70–0.85, CIs wide, no family-wise
+  collapse relative to the no-attack arm.
+- Completed harmful failures: 19 overpower, 7 stealth, 10 false alarms.
+- Attack success 19% thinking ON vs 8% thinking OFF.
+- Independent-label kappa vs judge: 0.57 / 0.53 / 0.56. Judge vs old
+  keyword labeler: 0.92 agreement, kappa 0.84.
+- Differential steering (α = 5, 10, 20): stealth rescue 0 at every
+  alpha; overpower rescue 0.38 / 0.25 / 0.31. Cluster difference CIs
+  exclude zero in the opposite of the preregistered direction.
+- Ablation on clean harmful prompts: 3/10 new compliances thinking OFF,
+  0/10 thinking ON.
 
-Problem "Jailbreak success prediction is expensive.
-Can we use internal signals to predict which
-attacks will work?"
-
-Hypothesis "Refusal-direction magnitude predicts
-success for some attack families but not
-others. Where it fails, the attack either
-sneaks past detection or overpowers the
-refusal."
-
-Method "Trained a linear probe for refusal direction
-on Qwen 3.6. Tested 4 attack families.
-Measured prefill and generation refusal
-magnitudes."
-
-Key Result "Refusal direction predicts success for
-role-play and injection attacks (AUC=0.85)
-but fails for adversarial suffixes
-(AUC=0.52). For suffixes, the refusal
-direction never activates—the attack is
-stealthy."
-
-Baseline "Random guessing AUC=0.50.
-
-Clean-prompt refusal rate predicted 60% of
-variance. Our predictor beat both."
-Causal Test "Steering the refusal direction changed
-success rate by 40%, confirming causality."
-Limitations "Tested only one model (Qwen 3.6). Need
-to test generalization to other models."
-
-
-ran claude end to end implementation
-ran into issue
-
- need  to go over other tracer bullets an implemnt using save to jupyter lab uplad an test to google colab
- annoying with claude version beacsue fetiching data fror only harmful +director issues , etc
-
-
-“In Qwen3-4B, we found a low-dimensional activation direction at a late layer that strongly distinguishes our harmful and harmless prompt examples, and this separation generalizes across cross-validation folds.”
+The OpenAI judge was abandoned after the org's 50 request/day cap on
+both gpt-5-mini and gpt-4o-mini. Reported labels use Qwen3-4B as a local
+JSON judge. That limitation is in the write-up.

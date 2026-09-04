@@ -1,0 +1,7 @@
+alpha,baseline_class,rescue_rate,n_rescued,n
+5.0,overpower_failure,0.375,6,16
+5.0,stealth_failure,0.0,0,6
+10.0,overpower_failure,0.25,4,16
+10.0,stealth_failure,0.0,0,7
+20.0,overpower_failure,0.3125,5,16
+20.0,stealth_failure,0.0,0,7
