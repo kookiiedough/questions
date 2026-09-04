@@ -20,6 +20,7 @@ from neel.submission_ready import (
     controlled_prompt_length_confound,
     cross_validated_direction_report,
     direction_cosine,
+    extract_first_json_object,
     format_chat,
     generation_budget,
     held_out_youden_thresholds,
@@ -247,6 +248,13 @@ def test_judge_retry_delay_parses_rate_limit_wait():
         RuntimeError("Please try again in 28m48s. rate_limit_exceeded"),
         0,
     ) == pytest.approx(90)
+
+
+def test_extract_first_json_object_ignores_prose():
+    blob = extract_first_json_object(
+        "Sure.\n{\"refusal\": true, \"fulfills_request\": false}\nThanks"
+    )
+    assert json.loads(blob)["refusal"] is True
 
 
 def test_human_label_sample_is_blinded_and_deterministic(tmp_path):

@@ -44,6 +44,7 @@ from neel.submission_ready import (  # noqa: E402
     default_cache_dir,
     direction_cosine,
     extract_direction,
+    extract_first_json_object,
     fit_youden_threshold,
     format_chat,
     generate_with_hook,
@@ -185,6 +186,9 @@ def main() -> None:
     needs_model = any(
         stage in stages
         for stage in ("extract", "battery", "steering")
+    ) or (
+        "judge" in stages
+        and os.environ.get("JUDGE_BACKEND", "openai") == "local"
     )
     model = tokenizer = None
     if needs_model:
@@ -366,20 +370,62 @@ def main() -> None:
     if "judge" in stages:
         if battery is None:
             raise RuntimeError("judge stage needs battery_all.jsonl")
-        require_judge_api_key()
-        client = OpenAI()
-        judge_model = resolve_judge_model(client)
+        judge_backend = os.environ.get("JUDGE_BACKEND", "openai")
+        if judge_backend == "local":
+            if model is None or tokenizer is None:
+                raise RuntimeError("local judge needs the Qwen3-4B model")
+            judge_model = f"{MODEL_ID}-local-json"
 
-        def call_judge(system_prompt, final_answer):
-            response = client.chat.completions.create(
-                model=judge_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
+            def call_judge(system_prompt, final_answer):
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_prompt + "\nReturn only a JSON object.",
+                    },
                     {"role": "user", "content": final_answer},
-                ],
-                response_format={"type": "json_object"},
-            )
-            return response.choices[0].message.content
+                ]
+                formatted = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+                input_device = model.get_input_embeddings().weight.device
+                input_ids = tokenizer(formatted, return_tensors="pt").input_ids.to(
+                    input_device
+                )
+                with torch.no_grad():
+                    output_ids = model.generate(
+                        input_ids,
+                        max_new_tokens=256,
+                        pad_token_id=tokenizer.eos_token_id,
+                        do_sample=True,
+                        temperature=0.3,
+                        top_p=0.9,
+                    )
+                raw = tokenizer.decode(
+                    output_ids[0, input_ids.shape[1] :], skip_special_tokens=True
+                )
+                if "</think>" in raw:
+                    _, answer, closed = split_trace(raw)
+                    raw = answer if closed and answer else raw
+                return extract_first_json_object(raw)
+
+        else:
+            require_judge_api_key()
+            client = OpenAI()
+            judge_model = resolve_judge_model(client)
+
+            def call_judge(system_prompt, final_answer):
+                response = client.chat.completions.create(
+                    model=judge_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": final_answer},
+                    ],
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content
 
         judge_fingerprint = hashlib.sha256(
             json.dumps(
@@ -387,6 +433,7 @@ def main() -> None:
                     "battery_run": run_fingerprint,
                     "judge_model": judge_model,
                     "judge_prompt": JUDGE_SYSTEM_PROMPT,
+                    "judge_backend": judge_backend,
                 },
                 sort_keys=True,
             ).encode()
@@ -396,7 +443,7 @@ def main() -> None:
         def call_judge_logged(system_prompt, final_answer):
             judged_so_far["n"] += 1
             if judged_so_far["n"] == 1 or judged_so_far["n"] % 10 == 0:
-                log(f"judge API call {judged_so_far['n']}")
+                log(f"judge call {judged_so_far['n']} backend={judge_backend}")
             return call_judge(system_prompt, final_answer)
 
         battery_judged = run_judge_pass(

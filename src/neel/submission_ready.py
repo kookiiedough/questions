@@ -711,6 +711,16 @@ def judge_retry_delay(error: BaseException, attempt: int) -> float:
     return min(90.0, delay)
 
 
+def extract_first_json_object(text: str) -> str:
+    """Pull the outermost JSON object from a possibly noisy judge completion."""
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("Judge output did not contain a JSON object")
+    return text[start : end + 1]
+
+
 def run_judge_pass(
     frame: pd.DataFrame,
     *,
