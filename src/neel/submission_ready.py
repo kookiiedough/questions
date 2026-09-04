@@ -689,25 +689,26 @@ def judge_final_answer(
 
 
 def judge_retry_delay(error: BaseException, attempt: int) -> float:
-    """Back off longer for daily/minute rate limits than for parse errors."""
+    """Back off for rate limits, but never park the run for hours."""
 
     text = str(error)
     lowered = text.lower()
+    delay = float(2**attempt)
     if "429" in text or "rate_limit" in lowered or "rate limit" in lowered:
         import re
 
-        minutes_seconds = re.search(r"try again in (\d+)m(\d+(?:\.\d+)?)s", text)
-        if minutes_seconds:
-            return (
-                int(minutes_seconds.group(1)) * 60
-                + float(minutes_seconds.group(2))
-                + 5
-            )
-        seconds = re.search(r"try again in (\d+(?:\.\d+)?)s", text)
-        if seconds:
-            return float(seconds.group(1)) + 1
-        return min(180.0, 30.0 * (2**attempt))
-    return float(2**attempt)
+        hours_minutes_seconds = re.search(
+            r"try again in (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s",
+            text,
+        )
+        if hours_minutes_seconds:
+            hours = int(hours_minutes_seconds.group(1) or 0)
+            minutes = int(hours_minutes_seconds.group(2) or 0)
+            seconds = float(hours_minutes_seconds.group(3) or 0)
+            delay = hours * 3600 + minutes * 60 + seconds + 5
+        else:
+            delay = min(90.0, 20.0 * (2**attempt))
+    return min(90.0, delay)
 
 
 def run_judge_pass(
@@ -774,7 +775,13 @@ def run_judge_pass(
                 except Exception as error:
                     last_error = error
                     if attempt + 1 < max_attempts:
-                        time.sleep(judge_retry_delay(error, attempt))
+                        delay = judge_retry_delay(error, attempt)
+                        print(
+                            f"judge retry {attempt + 1}/{max_attempts} for {key} "
+                            f"in {delay:.1f}s: {error}",
+                            flush=True,
+                        )
+                        time.sleep(delay)
             else:
                 raise RuntimeError(
                     f"Judge failed after {max_attempts} attempts for {key}"

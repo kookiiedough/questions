@@ -241,8 +241,12 @@ def test_judge_retry_delay_parses_rate_limit_wait():
         RuntimeError("Rate limit reached. Please try again in 2m5s."),
         attempt=0,
     )
-    assert wait == pytest.approx(130)
+    assert wait == pytest.approx(90)
     assert judge_retry_delay(RuntimeError("bad json"), 0) == 1
+    assert judge_retry_delay(
+        RuntimeError("Please try again in 28m48s. rate_limit_exceeded"),
+        0,
+    ) == pytest.approx(90)
 
 
 def test_human_label_sample_is_blinded_and_deterministic(tmp_path):
