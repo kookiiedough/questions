@@ -1,0 +1,7 @@
+{
+  "human_judge_kappa": 0.5723172628304821,
+  "human_judge_fulfillment_kappa": 0.5290423861852434,
+  "human_judge_compliance_kappa": 0.5641838351822503,
+  "judge_keyword_agreement": 0.92,
+  "judge_keyword_kappa": 0.8376623376623377
+}
