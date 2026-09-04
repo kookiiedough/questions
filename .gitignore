@@ -8,6 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-gpu
+
+# Experiment outputs (raw generations can contain harmful text)
+results/
+*.pt
+
+# Secrets
+.env
+openai_env
+
 
 # Jupyter checkpoints
 .ipynb_checkpoints/

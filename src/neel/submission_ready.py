@@ -431,12 +431,13 @@ def run_generation_with_trajectory(
 
     set_seed(seed)
     formatted = format_chat(tokenizer, prompt, thinking)
-    input_device = model._model.get_input_embeddings().weight.device
+    raw_model = getattr(model, "_model", model)
+    input_device = raw_model.get_input_embeddings().weight.device
     input_ids = tokenizer(formatted, return_tensors="pt").input_ids.to(input_device)
     max_new_tokens = generation_budget(thinking)
 
     with torch.no_grad():
-        output_ids = model._model.generate(
+        output_ids = raw_model.generate(
             input_ids,
             max_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.eos_token_id,
@@ -469,8 +470,7 @@ def run_generation_with_trajectory(
         n_think_tokens = 0
 
     full_ids = torch.cat([input_ids, gen_ids.unsqueeze(0).to(input_device)], dim=1)
-    with model.trace(full_ids):
-        hidden_all = model.model.layers[best_layer].output[0].save()
+    hidden_all = decoder_layer_hidden_states(raw_model, full_ids, best_layer)
 
     hidden_all = hidden_all.float()
     direction = refusal_direction.float().to(hidden_all.device)
@@ -493,6 +493,49 @@ def run_generation_with_trajectory(
         "trajectory": projections.tolist(),
         "trajectory_prompt_boundary": n_prompt_tokens,
     }
+
+
+def causal_lm(model: Any) -> Any:
+    """Return the Hugging Face causal LM, unwrapping nnsight when needed."""
+
+    return getattr(model, "_model", model)
+
+
+def decoder_layer_hidden_states(raw_model: Any, input_ids: Any, layer: int) -> Any:
+    """Residual stream after one decoder layer, shape [seq, hidden]."""
+
+    import torch
+
+    with torch.no_grad():
+        outputs = raw_model(input_ids, output_hidden_states=True)
+    hidden = outputs.hidden_states[layer + 1]
+    if hidden.dim() == 3:
+        hidden = hidden[0]
+    return hidden
+
+
+def collect_last_token_activations(
+    raw_model: Any,
+    tokenizer: Any,
+    formatted_prompts: Sequence[str],
+) -> Any:
+    """Last-token residual after every decoder layer, shape [n, layers, hidden]."""
+
+    import torch
+
+    rows = []
+    input_device = raw_model.get_input_embeddings().weight.device
+    n_layers = raw_model.config.num_hidden_layers
+    for prompt in formatted_prompts:
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(input_device)
+        with torch.no_grad():
+            outputs = raw_model(input_ids, output_hidden_states=True)
+        layer_states = torch.stack(
+            [outputs.hidden_states[layer + 1][0, -1, :] for layer in range(n_layers)]
+        )
+        rows.append(layer_states.float().cpu())
+        del outputs
+    return torch.stack(rows)
 
 
 def _decoder_hidden(output: Any) -> Any:
@@ -1236,22 +1279,26 @@ def run_battery(
                 Path(cache_dir)
                 / f"{family}__thinking_{str(thinking).lower()}.jsonl"
             )
+            expected_ids = {row["condition_id"] for row in family_rows}
+            reused: dict[str, dict[str, Any]] = {}
             if cache_path.exists():
                 cached_rows = [
                     json.loads(line)
                     for line in cache_path.read_text(encoding="utf-8").splitlines()
                     if line.strip()
                 ]
-                expected_ids = {row["condition_id"] for row in family_rows}
-                cached_ids = {row.get("condition_id") for row in cached_rows}
-                fingerprints = {
-                    row.get("_run_fingerprint") for row in cached_rows
+                reused = {
+                    row["condition_id"]: row
+                    for row in cached_rows
+                    if row.get("condition_id") in expected_ids
+                    and row.get("_run_fingerprint") == run_fingerprint
                 }
-                if expected_ids == cached_ids and fingerprints == {run_fingerprint}:
-                    records.extend(cached_rows)
-                    continue
-            output_rows = []
+            output_rows: list[dict[str, Any]] = []
             for condition in family_rows:
+                cached = reused.get(condition["condition_id"])
+                if cached is not None:
+                    output_rows.append(cached)
+                    continue
                 measurement = run_attempt(condition["prompt"], thinking)
                 output_rows.append(
                     {
@@ -1261,12 +1308,19 @@ def run_battery(
                         **measurement,
                     }
                 )
-            cache_family(
-                output_rows,
-                cache_dir,
-                family=family,
-                thinking=thinking,
-            )
+                cache_family(
+                    output_rows,
+                    cache_dir,
+                    family=family,
+                    thinking=thinking,
+                )
+            if not reused or {row["condition_id"] for row in output_rows} != set(reused):
+                cache_family(
+                    output_rows,
+                    cache_dir,
+                    family=family,
+                    thinking=thinking,
+                )
             records.extend(output_rows)
     return pd.DataFrame(records)
 

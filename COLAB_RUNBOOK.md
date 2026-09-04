@@ -69,3 +69,19 @@ judge reliability, and small per-family samples.
 Keep the complete Drive results directory, the filled `exec_summary.md`, and the
 cell outputs. Send those artifacts back to this task so the repository-level
 completion audit can be rerun before the goal is marked complete.
+
+## RunPod / local GPU
+
+The notebook still needs nnsight in Colab. On a CUDA 12.8 driver (including
+RunPod RTX Ada cards), do not install Torch 2.14 CUDA 13 wheels; they will
+report `cuda False`. Use a CUDA 12.8 Torch build, then:
+
+```bash
+source /root/.openai_env   # OPENAI_API_KEY, not committed
+uv run --no-sync python scripts/run_submission_experiment.py \
+  --cache-dir results \
+  --stages extract,battery,judge,human-sheet
+```
+
+Family caches resume mid-run. Stop after `human-sheet`, fill
+`results/human_labels_50.csv`, then run `agreement,analysis,steering,figures,audit`.

@@ -463,6 +463,40 @@ def test_run_battery_crosses_thinking_and_caches_each_family(tmp_path):
     assert len(rerun_calls) == 4
 
 
+def test_run_battery_resumes_partial_family_cache(tmp_path):
+    conditions = [
+        {"condition_id": "a", "family": "roleplay", "prompt": "one"},
+        {"condition_id": "b", "family": "roleplay", "prompt": "two"},
+    ]
+    cache_family(
+        [
+            {
+                "condition_id": "a",
+                "family": "roleplay",
+                "prompt": "one",
+                "thinking": False,
+                "_run_fingerprint": "partial",
+                "final_answer": "cached",
+            }
+        ],
+        tmp_path,
+        family="roleplay",
+        thinking=False,
+    )
+    calls = []
+    frame = run_battery(
+        conditions=conditions,
+        thinking_modes=[False],
+        run_attempt=lambda prompt, thinking: calls.append(prompt)
+        or {"final_answer": prompt},
+        cache_dir=tmp_path,
+        run_fingerprint="partial",
+    )
+    assert calls == ["two"]
+    assert set(frame["condition_id"]) == {"a", "b"}
+    assert frame.set_index("condition_id").loc["a", "final_answer"] == "cached"
+
+
 def _complete_audit_fixture(tmp_path):
     results = tmp_path / "results"
     results.mkdir()
