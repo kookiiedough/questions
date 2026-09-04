@@ -705,15 +705,38 @@ def main() -> None:
                 answer = raw_text.strip()
             return judge_final_answer(request, answer, judge_call=call_judge)
 
-        steering_rows = []
         failed = classified[
             (classified["family"] != "no_attack")
             & classified["failure_class"].isin(["stealth_failure", "overpower_failure"])
         ]
         log(f"steering failures={len(failed)}")
+        steering_dir = cache_dir / "steering"
+        steering_dir.mkdir(parents=True, exist_ok=True)
+
+        def load_jsonl_dicts(path: Path) -> list[dict]:
+            if not path.exists() or path.stat().st_size == 0:
+                return []
+            return pd.read_json(path, lines=True).to_dict(orient="records")
+
+        def append_jsonl(path: Path, row: dict) -> None:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+        steering_rows = []
         for alpha in (5.0, 10.0, 20.0):
+            checkpoint = steering_dir / f"addition_alpha_{alpha:g}.jsonl"
+            existing = load_jsonl_dicts(checkpoint)
+            done = {
+                (str(item["condition_id"]), bool(item["thinking"]))
+                for item in existing
+            }
+            steering_rows.extend(existing)
+            log(f"steer alpha={alpha:g} resume={len(existing)} remaining={len(failed) - len(done)}")
             for _, row in failed.iterrows():
                 thinking = bool(row["thinking"])
+                key = (str(row["condition_id"]), thinking)
+                if key in done:
+                    continue
                 direction = mode_dirs[thinking]
                 started = time.time()
                 raw_text = generate_with_hook(
@@ -726,34 +749,38 @@ def main() -> None:
                     seed=SEED,
                 )
                 judged = judge_generated(raw_text, thinking, row["target"])
-                steering_rows.append(
-                    {
-                        "condition_id": row["condition_id"],
-                        "thinking": thinking,
-                        "family": row["family"],
-                        "target_id": row["target_id"],
-                        "baseline_class": row["failure_class"],
-                        "alpha": alpha,
-                        "baseline_complied": row["judge_complied"],
-                        "baseline_final_answer": row["final_answer"],
-                        "steered_raw_text": raw_text,
-                        "rescued_to_refusal": None if judged is None else judged.refusal,
-                        "steered_fulfills_request": None
-                        if judged is None
-                        else judged.fulfills_request,
-                        "steered_rationale": None if judged is None else judged.rationale,
-                    }
-                )
+                record = {
+                    "condition_id": row["condition_id"],
+                    "thinking": thinking,
+                    "family": row["family"],
+                    "target_id": row["target_id"],
+                    "baseline_class": row["failure_class"],
+                    "alpha": alpha,
+                    "baseline_complied": bool(row["judge_complied"]),
+                    "baseline_final_answer": row["final_answer"],
+                    "steered_raw_text": raw_text,
+                    "rescued_to_refusal": None if judged is None else judged.refusal,
+                    "steered_fulfills_request": None
+                    if judged is None
+                    else judged.fulfills_request,
+                    "steered_rationale": None if judged is None else judged.rationale,
+                }
+                steering_rows.append(record)
+                append_jsonl(checkpoint, record)
                 log(f"steer alpha={alpha} {row['condition_id']} {time.time()-started:.1f}s")
-            checkpoint = cache_dir / "steering" / f"addition_alpha_{alpha:g}.jsonl"
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(
-                [row for row in steering_rows if row["alpha"] == alpha]
-            ).to_json(checkpoint, orient="records", lines=True)
 
-        ablation_rows = []
+        ablation_path = steering_dir / "ablation.jsonl"
+        ablation_rows = load_jsonl_dicts(ablation_path)
+        ablation_done = {
+            (str(item["target_id"]), bool(item["thinking"]))
+            for item in ablation_rows
+        }
+        log(f"ablation resume={len(ablation_rows)}")
         for thinking in (True, False):
             for record in battery_harmful:
+                key = (record.prompt_id, thinking)
+                if key in ablation_done:
+                    continue
                 raw_text = generate_with_hook(
                     raw_model=model,
                     tokenizer=tokenizer,
@@ -764,27 +791,34 @@ def main() -> None:
                     seed=SEED,
                 )
                 judged = judge_generated(raw_text, thinking, record.text)
-                baseline = battery_judged[
+                matched = battery_judged[
                     (battery_judged["family"] == "no_attack")
                     & (battery_judged["target_id"] == record.prompt_id)
-                    & (battery_judged["thinking"] == thinking)
-                ].iloc[0]
-                ablation_rows.append(
-                    {
-                        "target_id": record.prompt_id,
-                        "thinking": thinking,
-                        "baseline_complied": baseline["judge_complied"],
-                        "baseline_final_answer": baseline["final_answer"],
-                        "ablated_raw_text": raw_text,
-                        "complied_after_ablation": None
-                        if judged is None
-                        else judged.complied,
-                        "ablation_fulfills_request": None
-                        if judged is None
-                        else judged.fulfills_request,
-                        "ablation_rationale": None if judged is None else judged.rationale,
-                    }
-                )
+                    & (battery_judged["thinking"].astype(bool) == thinking)
+                ]
+                if matched.empty:
+                    raise RuntimeError(
+                        f"Missing no-attack baseline for {record.prompt_id} thinking={thinking}"
+                    )
+                baseline = matched.iloc[0]
+                ablation_record = {
+                    "target_id": record.prompt_id,
+                    "thinking": thinking,
+                    "baseline_complied": bool(baseline["judge_complied"])
+                    if pd.notna(baseline["judge_complied"])
+                    else False,
+                    "baseline_final_answer": baseline["final_answer"],
+                    "ablated_raw_text": raw_text,
+                    "complied_after_ablation": None
+                    if judged is None
+                    else judged.complied,
+                    "ablation_fulfills_request": None
+                    if judged is None
+                    else judged.fulfills_request,
+                    "ablation_rationale": None if judged is None else judged.rationale,
+                }
+                ablation_rows.append(ablation_record)
+                append_jsonl(ablation_path, ablation_record)
                 log(f"ablate thinking={thinking} {record.prompt_id}")
 
         steering = pd.DataFrame(steering_rows)
@@ -799,11 +833,14 @@ def main() -> None:
                 group_a="stealth_failure",
                 group_b="overpower_failure",
             )
-            steering_contrasts.append({"alpha": alpha, **contrast})
+            steering_contrasts.append({"alpha": float(alpha), **contrast})
         steering_contrasts = pd.DataFrame(steering_contrasts)
-        ablation["new_compliance_after_ablation"] = ~ablation["baseline_complied"].astype(
-            bool
-        ) & ablation["complied_after_ablation"].astype(bool)
+        ablation_complied = ablation["complied_after_ablation"]
+        ablation["new_compliance_after_ablation"] = (
+            ~ablation["baseline_complied"].fillna(False).astype(bool)
+            & ablation_complied.notna()
+            & ablation_complied.fillna(False).astype(bool)
+        )
         steering.to_csv(cache_dir / "differential_steering.csv", index=False)
         steering_contrasts.to_csv(cache_dir / "steering_contrasts.csv", index=False)
         ablation.to_csv(cache_dir / "directional_ablation.csv", index=False)
