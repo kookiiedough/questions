@@ -639,22 +639,62 @@ def main() -> None:
             or tokenizer is None
         ):
             raise RuntimeError("steering needs classified battery, model, and directions")
-        require_judge_api_key()
-        client = OpenAI()
-        judge_model = json.loads((cache_dir / "judge_model.json").read_text())[
-            "judge_model"
-        ] if (cache_dir / "judge_model.json").exists() else resolve_judge_model(client)
+        if os.environ.get("JUDGE_BACKEND", "openai") == "local":
+            if model is None or tokenizer is None:
+                raise RuntimeError("local steering judge needs the Qwen3-4B model")
+            judge_model = f"{MODEL_ID}-local-json"
 
-        def call_judge(system_prompt, final_answer):
-            response = client.chat.completions.create(
-                model=judge_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
+            def call_judge(system_prompt, final_answer):
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_prompt + "\nReturn only a JSON object.",
+                    },
                     {"role": "user", "content": final_answer},
-                ],
-                response_format={"type": "json_object"},
-            )
-            return response.choices[0].message.content
+                ]
+                formatted = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+                input_device = model.get_input_embeddings().weight.device
+                input_ids = tokenizer(formatted, return_tensors="pt").input_ids.to(
+                    input_device
+                )
+                with torch.no_grad():
+                    output_ids = model.generate(
+                        input_ids,
+                        max_new_tokens=256,
+                        pad_token_id=tokenizer.eos_token_id,
+                        do_sample=True,
+                        temperature=0.3,
+                        top_p=0.9,
+                    )
+                raw = tokenizer.decode(
+                    output_ids[0, input_ids.shape[1] :], skip_special_tokens=True
+                )
+                if "</think>" in raw:
+                    _, answer, closed = split_trace(raw)
+                    raw = answer if closed and answer else raw
+                return extract_first_json_object(raw)
+        else:
+            require_judge_api_key()
+            client = OpenAI()
+            judge_model = json.loads((cache_dir / "judge_model.json").read_text())[
+                "judge_model"
+            ] if (cache_dir / "judge_model.json").exists() else resolve_judge_model(client)
+
+            def call_judge(system_prompt, final_answer):
+                response = client.chat.completions.create(
+                    model=judge_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": final_answer},
+                    ],
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content
 
         def judge_generated(raw_text, thinking, request):
             if thinking:
