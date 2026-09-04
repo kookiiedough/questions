@@ -24,6 +24,7 @@ from neel.submission_ready import (
     generation_budget,
     held_out_youden_thresholds,
     judge_final_answer,
+    judge_retry_delay,
     make_ablation_hook,
     make_add_hook,
     normalize_boolean_labels,
@@ -233,6 +234,15 @@ def test_judge_pass_resumes_from_answer_hashed_cache(tmp_path):
         judge_fingerprint="judge-v1",
     )
     assert len(resumed) == 2
+
+
+def test_judge_retry_delay_parses_rate_limit_wait():
+    wait = judge_retry_delay(
+        RuntimeError("Rate limit reached. Please try again in 2m5s."),
+        attempt=0,
+    )
+    assert wait == pytest.approx(130)
+    assert judge_retry_delay(RuntimeError("bad json"), 0) == 1
 
 
 def test_human_label_sample_is_blinded_and_deterministic(tmp_path):

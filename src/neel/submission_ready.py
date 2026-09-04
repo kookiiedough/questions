@@ -688,6 +688,28 @@ def judge_final_answer(
     return parse_judge_result(payload)
 
 
+def judge_retry_delay(error: BaseException, attempt: int) -> float:
+    """Back off longer for daily/minute rate limits than for parse errors."""
+
+    text = str(error)
+    lowered = text.lower()
+    if "429" in text or "rate_limit" in lowered or "rate limit" in lowered:
+        import re
+
+        minutes_seconds = re.search(r"try again in (\d+)m(\d+(?:\.\d+)?)s", text)
+        if minutes_seconds:
+            return (
+                int(minutes_seconds.group(1)) * 60
+                + float(minutes_seconds.group(2))
+                + 5
+            )
+        seconds = re.search(r"try again in (\d+(?:\.\d+)?)s", text)
+        if seconds:
+            return float(seconds.group(1)) + 1
+        return min(180.0, 30.0 * (2**attempt))
+    return float(2**attempt)
+
+
 def run_judge_pass(
     frame: pd.DataFrame,
     *,
@@ -752,7 +774,7 @@ def run_judge_pass(
                 except Exception as error:
                     last_error = error
                     if attempt + 1 < max_attempts:
-                        time.sleep(2**attempt)
+                        time.sleep(judge_retry_delay(error, attempt))
             else:
                 raise RuntimeError(
                     f"Judge failed after {max_attempts} attempts for {key}"

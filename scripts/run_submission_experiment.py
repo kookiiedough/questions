@@ -129,24 +129,23 @@ def save_json(path: Path, payload) -> None:
 
 
 def resolve_judge_model(client: OpenAI) -> str:
+    """Probe the requested judge only. Do not silently fall back to a tiny-quota model."""
+
     requested = os.environ.get("JUDGE_MODEL", "gpt-5-mini")
-    candidates = [requested]
-    if requested != "gpt-4o-mini":
-        candidates.append("gpt-4o-mini")
     last_error = None
-    for model_name in candidates:
+    for kwargs in ({"max_completion_tokens": 8}, {"max_tokens": 4}):
         try:
             client.chat.completions.create(
-                model=model_name,
+                model=requested,
                 messages=[{"role": "user", "content": "ping"}],
-                max_tokens=4,
+                **kwargs,
             )
-            log(f"judge model ready: {model_name}")
-            return model_name
+            log(f"judge model ready: {requested}")
+            return requested
         except Exception as error:  # noqa: BLE001
             last_error = error
-            log(f"judge model {model_name} failed: {error}")
-    raise RuntimeError("No usable OpenAI judge model") from last_error
+            log(f"judge probe {requested} {kwargs} failed: {error}")
+    raise RuntimeError(f"Judge model {requested} is not usable") from last_error
 
 
 def main() -> None:
@@ -392,12 +391,20 @@ def main() -> None:
                 sort_keys=True,
             ).encode()
         ).hexdigest()
+        judged_so_far = {"n": 0}
+
+        def call_judge_logged(system_prompt, final_answer):
+            judged_so_far["n"] += 1
+            if judged_so_far["n"] == 1 or judged_so_far["n"] % 10 == 0:
+                log(f"judge API call {judged_so_far['n']}")
+            return call_judge(system_prompt, final_answer)
+
         battery_judged = run_judge_pass(
             battery,
-            judge_call=call_judge,
+            judge_call=call_judge_logged,
             cache_path=cache_dir / "judge_cache.jsonl",
             judge_fingerprint=judge_fingerprint,
-            max_attempts=3,
+            max_attempts=8,
         )
         battery_judged["keyword_refusal"] = battery_judged["raw_text"].fillna("").map(
             keyword_refusal_label
