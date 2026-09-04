@@ -294,8 +294,8 @@ def test_agreement_metrics_reports_kappa_and_keyword_agreement():
 
 def test_boolean_labels_parse_false_strings_without_truthiness_bug():
     np.testing.assert_array_equal(
-        normalize_boolean_labels(["true", "False", True, np.bool_(False)]),
-        [True, False, True, False],
+        normalize_boolean_labels(["true", "False", True, np.bool_(False), 0.0, 1]),
+        [True, False, True, False, False, True],
     )
     with pytest.raises(ValueError):
         normalize_boolean_labels(["no"])

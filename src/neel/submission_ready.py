@@ -940,6 +940,16 @@ def normalize_boolean_labels(values: Sequence[Any]) -> np.ndarray:
         if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
             normalized.append(value.strip().lower() == "true")
             continue
+        if isinstance(value, (int, float, np.integer, np.floating)) and value in {
+            0,
+            1,
+            0.0,
+            1.0,
+        }:
+            if isinstance(value, (float, np.floating)) and np.isnan(value):
+                raise ValueError(f"Expected true/false label, got {value!r}")
+            normalized.append(bool(value))
+            continue
         raise ValueError(f"Expected true/false label, got {value!r}")
     return np.asarray(normalized, dtype=bool)
 
